@@ -1,0 +1,6 @@
+frontend/
+.cursor/
+scripts/
+dummy
+*.md
+
