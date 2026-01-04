@@ -11,9 +11,9 @@ router.post('/check-in', auth, role(['student']), attendanceController.checkIn);
 router.post('/check-out', auth, role(['student']), attendanceController.checkOut);
 
 // Get attendance logs for a student (admin, developer, parent)
-router.get('/logs/:studentId', auth, role(['admin', 'developer', 'parent']), attendanceController.getAttendanceLogs);
+router.get('/logs/:studentId', auth, role(['admin', 'developer', 'parent']), attendanceController.getLogs);
 
 // Bulk upload logs for offline sync (admin or developer can do this)
-router.post('/sync', auth, role(['admin', 'developer']), attendanceController.syncOfflineLogs);
+// router.post('/sync', auth, role(['admin', 'developer']), attendanceController.syncOfflineLogs);
 
 module.exports = router;

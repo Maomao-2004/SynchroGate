@@ -6,7 +6,7 @@ const role = require('../middleware/roleMiddleware');
 
 // CRUD for students
 router.post('/', auth, role(['admin', 'developer']), studentController.createStudent);
-router.get('/', auth, role(['admin', 'developer']), studentController.getStudents);
+router.get('/', auth, role(['admin', 'developer']), studentController.getAllStudents);
 router.get('/:id', auth, role(['admin', 'developer', 'parent']), studentController.getStudentById);
 router.put('/:id', auth, role(['admin', 'developer']), studentController.updateStudent);
 router.delete('/:id', auth, role(['admin', 'developer']), studentController.deleteStudent);
