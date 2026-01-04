@@ -572,16 +572,37 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
       if (!studentId) return;
 
       // Get linked parents for this student
-      const linksQuery = query(collection(db, 'parent_student_links'), where('studentId', '==', String(studentId)), where('status', '==', 'active'));
-      const linksSnapshot = await getDocs(linksQuery);
-      if (linksSnapshot.empty) return;
+      // CRITICAL: Query by both studentId (UID) and studentIdNumber (canonical) to find all links
+      const linksQuery1 = query(collection(db, 'parent_student_links'), where('studentId', '==', String(studentId)), where('status', '==', 'active'));
+      const linksQuery2 = query(collection(db, 'parent_student_links'), where('studentIdNumber', '==', String(studentId)), where('status', '==', 'active'));
+      
+      const [linksSnapshot1, linksSnapshot2] = await Promise.all([
+        getDocs(linksQuery1),
+        getDocs(linksQuery2)
+      ]);
+      
+      // Merge results and deduplicate
+      const allLinks = new Map();
+      [...linksSnapshot1.docs, ...linksSnapshot2.docs].forEach(doc => {
+        const data = doc.data();
+        const linkId = doc.id;
+        const parentUid = String(data?.parentId || '').trim();
+        const parentIdNumber = String(data?.parentIdNumber || '').trim();
+        
+        // Use canonical parentIdNumber if available, otherwise parentId
+        const key = parentIdNumber && parentIdNumber.includes('-') ? parentIdNumber : parentUid;
+        if (key && !allLinks.has(key)) {
+          allLinks.set(key, { parentUid, parentIdNumber, linkId, data });
+        }
+      });
+      
+      if (allLinks.size === 0) {
+        console.log('⏭️ No active parent-student links found for student:', studentId);
+        return;
+      }
 
-      const parentIds = Array.from(new Set(
-        linksSnapshot.docs
-          .map(doc => doc.data()?.parentId)
-          .filter(Boolean)
-          .map(String)
-      )).filter(pid => pid.includes('-')); // keep canonical ids only
+      // Get canonical parent IDs (must include '-')
+      const parentIds = Array.from(allLinks.keys()).filter(pid => String(pid).includes('-'));
 
       if (parentIds.length === 0) return;
 
@@ -671,14 +692,36 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
         
         console.log(`✅ Creating alert for logged-in parent ${targetPid} (${parentUserData.uid})`);
         
+        // CRITICAL: Verify this parent is actually linked to this student
+        const linkInfo = allLinks.get(targetPid);
+        if (!linkInfo) {
+          console.log(`⏭️ Skipping alert - parent ${targetPid} is not in active links for student ${studentId}`);
+          continue;
+        }
+        
+        // Double-check the link is for this specific student
+        const linkStudentId = String(linkInfo.data?.studentId || '').trim();
+        const linkStudentIdNumber = String(linkInfo.data?.studentIdNumber || '').trim();
+        const normalizedLinkStudentId = linkStudentIdNumber || linkStudentId;
+        const normalizedCurrentStudentId = String(studentId).trim();
+        
+        if (normalizedLinkStudentId !== normalizedCurrentStudentId && 
+            linkStudentId !== normalizedCurrentStudentId && 
+            linkStudentIdNumber !== normalizedCurrentStudentId) {
+          console.log(`⏭️ Skipping alert - link studentId (${normalizedLinkStudentId}) doesn't match current studentId (${normalizedCurrentStudentId})`);
+          continue;
+        }
+        
+        console.log(`✅ Verified link: parent ${targetPid} is linked to student ${studentId}`);
+        
         const notifItem = {
-          id: `sched_${studentId}_${type}_${uniqueSuffix}`,
+          id: `sched_${studentId}_${type}_${uniqueSuffix}_${targetPid}`, // Include parentId in ID to make it unique per parent
           type,
           title,
           message,
           createdAt: nowIso,
           status: 'unread',
-          parentId: targetPid, // Use targetPid (canonical) not pid
+          parentId: targetPid, // Use targetPid (canonical) - MUST match document ID
           studentId: String(studentId),
           studentName: studentName || 'Student',
           subject: subject || null,
