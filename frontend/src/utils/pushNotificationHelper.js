@@ -10,6 +10,13 @@ import { BASE_URL } from './apiConfig';
  * @returns {Promise<void>}
  */
 export const sendAlertPushNotification = async (alert, userId, role) => {
+  // DISABLED: Backend alertPushService.js now handles ALL push notifications automatically
+  // Frontend should NOT call this API - it causes duplicates and can send to wrong users
+  // The backend listener detects Firestore changes and sends notifications to the correct logged-in users
+  console.log('ℹ️ Frontend push notification call disabled - backend handles all notifications automatically');
+  return;
+  
+  // OLD CODE BELOW - DISABLED
   try {
     // Only send for unread alerts
     if (alert.status === 'read') {

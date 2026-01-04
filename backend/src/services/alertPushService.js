@@ -243,9 +243,11 @@ const initializeStudentAlertsListener = () => {
     }
     
     // Process changes - ONLY send to the document owner
-    snapshot.docChanges().forEach(async (change) => {
+    // CRITICAL: Process each change sequentially to avoid race conditions
+    for (const change of snapshot.docChanges()) {
       if (change.type === 'added' || change.type === 'modified') {
         const studentId = change.doc.id; // Document ID = studentId
+        console.log(`📋 [LISTENER] Processing ${change.type} for student document: ${studentId}`);
         const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
         const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
         const currentAlertIds = new Set();
@@ -344,7 +346,7 @@ const initializeStudentAlertsListener = () => {
           await sendPushForAlert(alert, 'student', studentId);
         }
       }
-    });
+    }
   }, (error) => {
     console.error('Student alerts listener error:', error);
   });
@@ -381,9 +383,11 @@ const initializeParentAlertsListener = () => {
     }
     
     // Process changes - ONLY send to the document owner
-    snapshot.docChanges().forEach(async (change) => {
+    // CRITICAL: Process each change sequentially to avoid race conditions
+    for (const change of snapshot.docChanges()) {
       if (change.type === 'added' || change.type === 'modified') {
         const parentId = change.doc.id; // Document ID = parentId
+        console.log(`📋 [LISTENER] Processing ${change.type} for parent document: ${parentId}`);
         const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
         const previousAlertIds = previousParentAlerts.get(parentId) || new Set();
         const currentAlertIds = new Set();
@@ -486,7 +490,7 @@ const initializeParentAlertsListener = () => {
           await sendPushForAlert(alert, 'parent', parentId);
         }
       }
-    });
+    }
   }, (error) => {
     console.error('Parent alerts listener error:', error);
   });
