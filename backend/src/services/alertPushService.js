@@ -69,45 +69,65 @@ const sendPushForAlert = async (alert, role, userId) => {
       }
     }
     
-    // STEP 2: Get user document
+    // STEP 2: Get user document - CRITICAL: userId is the document ID in users collection
+    // For students: userId = studentId (document ID in student_alerts)
+    // For parents: userId = parentId (document ID in parent_alerts)
+    // User documents are stored with document ID = studentId or parentId
     let userDoc = await firestore.collection('users').doc(userId).get();
     
-    // Try alternative IDs for admin/developer
+    // Try alternative IDs for admin/developer only
     if (!userDoc.exists && (role === 'admin' || role === 'developer')) {
       const altId = role === 'admin' ? 'Admin' : 'Developer';
       userDoc = await firestore.collection('users').doc(altId).get();
     }
     
-    // Try querying by UID if still not found (userId might be canonical ID)
-    if (!userDoc.exists) {
-      const querySnapshot = await firestore.collection('users')
-        .where('uid', '==', userId)
-        .limit(1)
-        .get();
-      if (!querySnapshot.empty) {
-        userDoc = querySnapshot.docs[0];
-      }
-    }
-    
-    // For students/parents, also try querying by studentId/parentId if userId is canonical
+    // CRITICAL: For students and parents, we MUST find user by document ID
+    // The document ID in users collection = studentId or parentId
+    // If not found, the user doesn't exist or hasn't registered
     if (!userDoc.exists && (role === 'student' || role === 'parent')) {
-      const fieldName = role === 'student' ? 'studentId' : 'parentId';
-      const querySnapshot = await firestore.collection('users')
-        .where(fieldName, '==', userId)
-        .limit(1)
-        .get();
-      if (!querySnapshot.empty) {
-        userDoc = querySnapshot.docs[0];
-      }
+      console.log(`⏭️ Skipping push - user document not found for ${role} ${userId}`);
+      return; // User document doesn't exist - user hasn't registered
     }
 
     if (!userDoc.exists) {
+      console.log(`⏭️ Skipping push - user document not found for ${userId}`);
       return; // User not found
     }
     
     const userData = userDoc.data();
     
-    // STEP 3: CRITICAL - User must be logged in
+    // STEP 3: CRITICAL - Verify document ID matches user's ID field
+    // For students: document ID (userId) must match userData.studentId
+    // For parents: document ID (userId) must match userData.parentId
+    if (role === 'student') {
+      const userStudentId = userData.studentId;
+      if (!userStudentId) {
+        console.log(`⏭️ Skipping push - user ${userId} has no studentId field`);
+        return; // User document doesn't have studentId
+      }
+      // Normalize both IDs for comparison
+      const normalizedUserStudentId = String(userStudentId).replace(/-/g, '').trim();
+      const normalizedUserId = String(userId).replace(/-/g, '').trim();
+      if (normalizedUserStudentId !== normalizedUserId && userStudentId !== userId) {
+        console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's studentId (${userStudentId})`);
+        return; // Document ID doesn't match user's studentId - wrong user
+      }
+    } else if (role === 'parent') {
+      const userParentId = userData.parentId || userData.parentIdNumber;
+      if (!userParentId) {
+        console.log(`⏭️ Skipping push - user ${userId} has no parentId field`);
+        return; // User document doesn't have parentId
+      }
+      // Normalize both IDs for comparison
+      const normalizedUserParentId = String(userParentId).replace(/-/g, '').trim();
+      const normalizedUserId = String(userId).replace(/-/g, '').trim();
+      if (normalizedUserParentId !== normalizedUserId && userParentId !== userId) {
+        console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's parentId (${userParentId})`);
+        return; // Document ID doesn't match user's parentId - wrong user
+      }
+    }
+    
+    // STEP 4: CRITICAL - User must be logged in
     // Must have: role, UID, FCM token, and login timestamp (proves they logged in)
     if (!userData?.role || !userData?.uid || !userData?.fcmToken) {
       console.log(`⏭️ Skipping push - user ${userId} not logged in (missing role/uid/token)`);
@@ -127,32 +147,7 @@ const sendPushForAlert = async (alert, role, userId) => {
       return; // Role mismatch - wrong user type
     }
     
-    // CRITICAL: Verify document ID (userId) matches user's actual ID
-    // For students: userId must match userData.studentId
-    // For parents: userId must match userData.parentId (canonical)
-    if (role === 'student') {
-      const userStudentId = userData.studentId;
-      if (userStudentId) {
-        const normalizedUserStudentId = String(userStudentId).replace(/-/g, '').trim();
-        const normalizedUserId = String(userId).replace(/-/g, '').trim();
-        if (normalizedUserStudentId !== normalizedUserId && userStudentId !== userId) {
-          console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's studentId (${userStudentId})`);
-          return; // Document ID doesn't match user's studentId
-        }
-      }
-    } else if (role === 'parent') {
-      const userParentId = userData.parentId || userData.parentIdNumber;
-      if (userParentId) {
-        const normalizedUserParentId = String(userParentId).replace(/-/g, '').trim();
-        const normalizedUserId = String(userId).replace(/-/g, '').trim();
-        if (normalizedUserParentId !== normalizedUserId && userParentId !== userId) {
-          console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's parentId (${userParentId})`);
-          return; // Document ID doesn't match user's parentId
-        }
-      }
-    }
-    
-    // STEP 4: For parent alerts, verify link to student
+    // STEP 5: For parent alerts, verify link to student
     if (role === 'parent') {
       const alertStudentId = alert.studentId || alert.student_id;
       if (alertStudentId) {
@@ -187,11 +182,11 @@ const sendPushForAlert = async (alert, role, userId) => {
       }
     }
     
-    // STEP 5: Build notification
+    // STEP 6: Build notification
     const title = alert.title || 'New Alert';
     const body = alert.message || alert.body || 'You have a new alert';
     
-    // STEP 6: Send notification
+    // STEP 7: Send notification
     await pushService.sendPush(
       userData.fcmToken,
       title,
