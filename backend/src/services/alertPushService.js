@@ -3,8 +3,7 @@
 const { firestore, admin } = require('../config/firebase');
 const pushService = require('./pushService');
 
-// Constants
-const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes for login validation
+// Constants (no longer used for time windows - only real-time alert filtering)
 
 let alertListeners = {
   student: null,
@@ -520,31 +519,11 @@ const initializeAdminAlertsListener = () => {
                 if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
                   // Skip
                 } else {
-                  // Check 4: User must have logged in recently (lastLoginAt within last 10 minutes)
-                  const lastLoginAt = adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt;
-                  if (lastLoginAt) {
-                    // Handle different timestamp formats
-                    let lastLoginTime;
-                    try {
-                      if (lastLoginAt.toMillis) {
-                        lastLoginTime = lastLoginAt.toMillis();
-                      } else if (lastLoginAt.seconds) {
-                        lastLoginTime = lastLoginAt.seconds * 1000;
-                      } else if (typeof lastLoginAt === 'string') {
-                        lastLoginTime = new Date(lastLoginAt).getTime();
-                      } else if (typeof lastLoginAt === 'number') {
-                        lastLoginTime = lastLoginAt;
-                      }
-                    } catch (err) {
-                      // Invalid format
-                    }
-                    
-                    if (lastLoginTime && !isNaN(lastLoginTime) && lastLoginTime > 0 && lastLoginTime <= now + 60000) {
-                      const timeSinceLogin = now - lastLoginTime;
-                      if (timeSinceLogin <= TEN_MINUTES) {
-                        adminUserIds.push('Admin');
-                      }
-                    }
+                  // Check 4: User must have FCM token and be logged in (has role and UID)
+                  // No time window check - if they have a token, they can receive notifications
+                  // Real-time filtering is handled by alert creation time check
+                  if (adminData?.fcmToken && adminData?.role && adminData?.uid) {
+                    adminUserIds.push('Admin');
                   }
                 }
               }
