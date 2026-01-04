@@ -356,14 +356,39 @@ const initializeAdminAlertsListener = () => {
         .get();
       
       const adminUserIds = [];
+      const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+      
       adminUsersSnapshot.forEach(doc => {
         const userData = doc.data();
-        // Must be logged in: has role, UID, FCM token, and login timestamp
+        // Must be logged in: has role, UID, FCM token, and RECENT login timestamp
         if (userData?.role === 'admin' && 
             userData?.uid && 
-            userData?.fcmToken && 
-            (userData?.lastLoginAt || userData?.pushTokenUpdatedAt)) {
-          adminUserIds.push(doc.id === 'Admin' ? 'Admin' : (userData.uid || doc.id));
+            userData?.fcmToken) {
+          const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
+          if (lastLoginAt) {
+            // Check if login is recent (within last 24 hours)
+            let loginTime = null;
+            try {
+              if (lastLoginAt.toMillis) {
+                loginTime = lastLoginAt.toMillis();
+              } else if (lastLoginAt.seconds) {
+                loginTime = lastLoginAt.seconds * 1000;
+              } else if (typeof lastLoginAt === 'string') {
+                loginTime = new Date(lastLoginAt).getTime();
+              } else if (typeof lastLoginAt === 'number') {
+                loginTime = lastLoginAt;
+              }
+            } catch (err) {
+              return; // Invalid timestamp
+            }
+            
+            if (loginTime && !isNaN(loginTime) && loginTime > 0) {
+              const timeSinceLogin = now - loginTime;
+              if (timeSinceLogin <= TWENTY_FOUR_HOURS) {
+                adminUserIds.push(doc.id === 'Admin' ? 'Admin' : (userData.uid || doc.id));
+              }
+            }
+          }
         }
       });
       
@@ -373,10 +398,32 @@ const initializeAdminAlertsListener = () => {
         const adminData = adminDoc.data();
         if (adminData?.role === 'admin' && 
             adminData?.uid && 
-            adminData?.fcmToken && 
-            (adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt)) {
-          if (!adminUserIds.includes('Admin')) {
-            adminUserIds.push('Admin');
+            adminData?.fcmToken) {
+          const lastLoginAt = adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt;
+          if (lastLoginAt) {
+            let loginTime = null;
+            try {
+              if (lastLoginAt.toMillis) {
+                loginTime = lastLoginAt.toMillis();
+              } else if (lastLoginAt.seconds) {
+                loginTime = lastLoginAt.seconds * 1000;
+              } else if (typeof lastLoginAt === 'string') {
+                loginTime = new Date(lastLoginAt).getTime();
+              } else if (typeof lastLoginAt === 'number') {
+                loginTime = lastLoginAt;
+              }
+            } catch (err) {
+              // Invalid timestamp
+            }
+            
+            if (loginTime && !isNaN(loginTime) && loginTime > 0) {
+              const timeSinceLogin = now - loginTime;
+              if (timeSinceLogin <= TWENTY_FOUR_HOURS) {
+                if (!adminUserIds.includes('Admin')) {
+                  adminUserIds.push('Admin');
+                }
+              }
+            }
           }
         }
       }
