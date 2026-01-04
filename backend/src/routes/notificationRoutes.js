@@ -52,8 +52,13 @@ router.post(
 router.post(
   '/alert-push',
   (req, res, next) => {
+    console.log('📥 ========================================');
     console.log('📥 POST /api/notifications/alert-push received');
+    console.log('📥 Timestamp:', new Date().toISOString());
     console.log('📥 Request body keys:', Object.keys(req.body || {}));
+    console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
+    console.log('📥 Request headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📥 ========================================');
     next();
   },
   notificationController.sendAlertPushNotification

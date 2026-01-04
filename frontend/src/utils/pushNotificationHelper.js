@@ -48,8 +48,10 @@ export const sendAlertPushNotification = async (alert, userId, role) => {
       alertType: alert.type || alert.alertType,
       alertTitle: alert.title
     });
+    console.log('📤 Full payload:', JSON.stringify(payload, null, 2));
 
     // Call backend API to send push notification
+    console.log('📤 Making fetch request to:', url);
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -57,6 +59,7 @@ export const sendAlertPushNotification = async (alert, userId, role) => {
       },
       body: JSON.stringify(payload),
     });
+    console.log('📤 Fetch response status:', response.status, response.statusText);
 
     const responseData = await response.json().catch(() => ({}));
 
