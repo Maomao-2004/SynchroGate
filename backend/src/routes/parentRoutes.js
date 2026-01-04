@@ -1,8 +1,8 @@
 // src/routes/parentRoutes.js
-import express from 'express';
-import parentController from '../controllers/parentController.js';
-import authMiddleware from '../middleware/authMiddleware.js';
-import roleMiddleware from '../middleware/roleMiddleware.js';
+const express = require('express');
+const parentController = require('../controllers/parentController');
+const authMiddleware = require('../middleware/authMiddleware');
+const roleMiddleware = require('../middleware/roleMiddleware');
 
 const router = express.Router();
 
@@ -12,4 +12,4 @@ router.use(roleMiddleware(['parent']));
 // GET /api/parent/linked-students
 router.get('/linked-students', parentController.getLinkedStudents);
 
-export default router;
+module.exports = router;
