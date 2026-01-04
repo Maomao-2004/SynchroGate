@@ -288,8 +288,6 @@ const sendAlertPushNotification = async (req, res, next) => {
       // If token is invalid/unregistered, mark it in the database
       if (pushError.code === 'messaging/registration-token-not-registered' || 
           pushError.code === 'messaging/invalid-registration-token') {
-        console.log(`⚠️ Invalid FCM token detected for user ${userId}, removing from database`);
-        
         // Remove invalid token from user document
         try {
           await firestore.collection('users').doc(userId).update({

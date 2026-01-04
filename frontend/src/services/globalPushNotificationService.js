@@ -284,19 +284,11 @@ const sendPushNotificationForAlert = async (alert, role) => {
       targetUserId = 'unknown';
     }
     
-    console.log('🔔 Alert detected, sending push notification via backend:', {
-      title,
-      role,
-      targetUserId,
-      alertId: alert.id
-    });
-    
     // Call the backend API to send push notification
     try {
       await sendAlertPushNotification(alert, targetUserId, role);
-      console.log('✅ Push notification sent successfully for alert:', alert.id);
     } catch (error) {
-      console.error('❌ Failed to send push notification for alert:', alert.id, error);
+      console.error('Failed to send push notification for alert:', alert.id, error);
       // Don't throw - this is non-blocking
     }
   } catch (error) {
