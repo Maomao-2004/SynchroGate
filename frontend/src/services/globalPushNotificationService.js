@@ -7,6 +7,7 @@ let globalListenerActive = false;
 let currentUser = null;
 let unsubscribeFunctions = [];
 let notifiedIds = new Set(); // Track which notifications have already been sent
+let lastNotificationTime = new Map(); // Track when each alert was notified to prevent spam
 
 // Get parent document ID - matches logic from Parent Alerts
 const getParentDocId = async (user) => {
@@ -80,10 +81,27 @@ export const initializeGlobalPushNotifications = async (user) => {
           const unreadAlerts = items.filter(item => item.status === 'unread');
           
           // Send push notifications for new unread alerts only
+          // Use time-based deduplication to allow re-notification after 5 minutes
+          const now = Date.now();
+          const FIVE_MINUTES = 5 * 60 * 1000;
+          
           for (const alert of unreadAlerts) {
-            if (!notifiedIds.has(alert.id)) {
+            const lastNotified = lastNotificationTime.get(alert.id) || 0;
+            const timeSinceLastNotification = now - lastNotified;
+            
+            // Only send if we haven't notified about this alert in the last 5 minutes
+            if (timeSinceLastNotification > FIVE_MINUTES) {
               await sendPushNotificationForAlert(alert, 'student');
-              notifiedIds.add(alert.id); // Mark as notified
+              notifiedIds.add(alert.id);
+              lastNotificationTime.set(alert.id, now);
+            }
+          }
+          
+          // Clean up old notification times (older than 1 hour)
+          for (const [alertId, timestamp] of lastNotificationTime.entries()) {
+            if (now - timestamp > 60 * 60 * 1000) {
+              lastNotificationTime.delete(alertId);
+              notifiedIds.delete(alertId);
             }
           }
           

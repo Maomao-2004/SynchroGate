@@ -52,7 +52,6 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
           visibility: 'public', // Show notification even when device is locked
           notificationCount: 1, // Badge count
           // Don't set clickAction - let FCM handle it automatically
-          // clickAction: 'FLUTTER_NOTIFICATION_CLICK', // This might interfere
           // Ensure notification shows even when screen is off
           lightSettings: {
             color: '#0000FF', // Blue color in hex format (#RRGGBB)
@@ -62,7 +61,8 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
         },
         // Critical: These settings ensure notifications work when app is closed
         ttl: 86400000, // 24 hours - how long notification is valid
-        collapseKey: 'alert', // Collapse multiple notifications with same key
+        // Use unique collapse key per alert to prevent collapsing different alerts
+        collapseKey: data.alertId || `alert_${Date.now()}`,
         // Direct boot mode - deliver notification even after reboot
         directBootOk: true,
       },
