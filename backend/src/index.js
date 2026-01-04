@@ -67,6 +67,25 @@ app.get('/health', (req, res) => {
   });
 });
 
+// API info endpoint
+app.get('/api', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok',
+    message: 'GuardianEntry API',
+    version: '1.0.0',
+    endpoints: {
+      auth: '/api/auth',
+      notifications: '/api/notifications',
+      students: '/api/students',
+      attendance: '/api/attendance',
+      admin: '/api/admin',
+      schedules: '/api/schedules',
+      logs: '/api/logs'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Mount routes with /api prefix
 app.use('/api/auth', authRoutes);
 app.use('/api/students', studentRoutes);
