@@ -61,8 +61,8 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
               blue: 1.0,
               alpha: 1.0,
             },
-            lightOnDuration: '1s',
-            lightOffDuration: '1s',
+            lightOnDurationMillis: 1000, // 1 second in milliseconds
+            lightOffDurationMillis: 1000, // 1 second in milliseconds
           },
         },
         // Critical: These settings ensure notifications work when app is closed
