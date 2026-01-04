@@ -274,65 +274,50 @@ const sendAlertPushNotification = async (req, res, next) => {
       });
     }
     
-    // Check 4: FCM token was updated recently (within last 30 minutes - very strict)
-    const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
-    if (!pushTokenUpdatedAt) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} has no pushTokenUpdatedAt timestamp (not logged in)`);
+    // Check 4: User MUST have logged in (lastLoginAt or pushTokenUpdatedAt required)
+    // This ensures user is actually logged in, not just has a token
+    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
+    if (!lastLoginAt) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has no login timestamp (not logged in)`);
       return res.status(403).json({ 
         error: "User not logged in",
-        message: "User has not logged in recently. Please log in again."
+        message: "User has not logged in. Please log in first."
       });
     }
     
-    // Handle different timestamp formats
+    // Parse lastLoginAt timestamp for real-time filtering
     const now = Date.now();
-    let tokenUpdateTime;
+    let lastLoginTime = null;
     try {
-      if (pushTokenUpdatedAt.toMillis) {
-        tokenUpdateTime = pushTokenUpdatedAt.toMillis();
-      } else if (pushTokenUpdatedAt.seconds) {
-        tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
-      } else if (typeof pushTokenUpdatedAt === 'string') {
-        const parsedDate = new Date(pushTokenUpdatedAt);
-        if (isNaN(parsedDate.getTime())) {
-          throw new Error('Invalid date string');
+      if (lastLoginAt.toMillis) {
+        lastLoginTime = lastLoginAt.toMillis();
+      } else if (lastLoginAt.seconds) {
+        lastLoginTime = lastLoginAt.seconds * 1000;
+      } else if (typeof lastLoginAt === 'string') {
+        const parsedDate = new Date(lastLoginAt);
+        if (!isNaN(parsedDate.getTime())) {
+          lastLoginTime = parsedDate.getTime();
         }
-        tokenUpdateTime = parsedDate.getTime();
-      } else if (typeof pushTokenUpdatedAt === 'number') {
-        tokenUpdateTime = pushTokenUpdatedAt;
-      } else {
-        throw new Error('Unknown timestamp format');
+      } else if (typeof lastLoginAt === 'number') {
+        lastLoginTime = lastLoginAt;
       }
     } catch (err) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid pushTokenUpdatedAt format: ${err.message}`);
+      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid login timestamp format`);
       return res.status(403).json({ 
-        error: "Invalid token timestamp",
-        message: "User token timestamp is invalid. Please log in again."
+        error: "Invalid login timestamp",
+        message: "User login timestamp is invalid. Please log in again."
       });
     }
     
-    // Check if timestamp is valid
-    if (isNaN(tokenUpdateTime) || tokenUpdateTime <= 0 || tokenUpdateTime > now + 60000) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid pushTokenUpdatedAt value: ${tokenUpdateTime}`);
+    if (!lastLoginTime || isNaN(lastLoginTime) || lastLoginTime <= 0) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid login timestamp value`);
       return res.status(403).json({ 
-        error: "Invalid token timestamp",
-        message: "User token timestamp is invalid. Please log in again."
+        error: "Invalid login timestamp",
+        message: "User login timestamp is invalid. Please log in again."
       });
     }
     
-    const timeSinceTokenUpdate = now - tokenUpdateTime;
-    const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes
-    
-    // If token is older than 10 minutes, user is likely not logged in
-    if (timeSinceTokenUpdate > TEN_MINUTES) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 10 minutes)`);
-      return res.status(403).json({ 
-        error: "User not logged in",
-        message: "User has not logged in recently. Please log in again."
-      });
-    }
-    
-    // CRITICAL: Only send alerts created AFTER user logged in
+    // CRITICAL: Only send alerts created AFTER user logged in (real-time only)
     // This prevents sending old unread alerts when user logs in
     const alertCreatedAt = alert.createdAt || alert.timestamp || alert.id;
     if (alertCreatedAt) {
