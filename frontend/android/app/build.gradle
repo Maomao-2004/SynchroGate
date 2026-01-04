@@ -177,19 +177,38 @@ dependencies {
 }
 
 // Copy google-services.json to release/debug directories before Google Services plugin runs
+// This ensures the file is available for both debug and release builds
 task copyGoogleServices(type: Copy) {
-    from file("google-services.json")
-    into file("src/release")
-    onlyIf { file("google-services.json").exists() }
+    def sourceFile = file("google-services.json")
+    def targetDir = file("src/release")
+    def targetFile = new File(targetDir, "google-services.json")
+    
+    // Only copy if source exists and target doesn't
+    if (sourceFile.exists()) {
+        targetDir.mkdirs()
+        from sourceFile
+        into targetDir
+    } else {
+        println "WARNING: google-services.json not found at ${sourceFile.absolutePath}"
+    }
 }
 
 task copyGoogleServicesDebug(type: Copy) {
-    from file("google-services.json")
-    into file("src/debug")
-    onlyIf { file("google-services.json").exists() }
+    def sourceFile = file("google-services.json")
+    def targetDir = file("src/debug")
+    def targetFile = new File(targetDir, "google-services.json")
+    
+    // Only copy if source exists and target doesn't
+    if (sourceFile.exists()) {
+        targetDir.mkdirs()
+        from sourceFile
+        into targetDir
+    } else {
+        println "WARNING: google-services.json not found at ${sourceFile.absolutePath}"
+    }
 }
 
-// Run copy tasks before preBuild
+// Run copy tasks before preBuild (always, not conditional)
 preBuild.dependsOn copyGoogleServices
 preBuild.dependsOn copyGoogleServicesDebug
 

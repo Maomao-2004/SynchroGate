@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "149886535931",
+    "project_id": "guardientry-database",
+    "storage_bucket": "guardientry-database.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:149886535931:android:243864d268dc9f2969085e",
+        "android_client_info": {
+          "package_name": "com.palabay.synchrogate"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCdA0Z1u6yVAvIxwWoehTVyLIBzfCV9VTY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
