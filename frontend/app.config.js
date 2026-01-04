@@ -62,15 +62,33 @@ if (GOOGLE_SERVICES_JSON &&
 }
 
 // Use existing file from repository (either as primary source or fallback)
-if (!googleServicesContent && fs.existsSync(googleServicesPath)) {
-  console.log('📝 Using google-services.json from repository...');
-  googleServicesContent = fs.readFileSync(googleServicesPath, 'utf8');
-}
-
 if (!googleServicesContent) {
-  console.error('❌ Error: google-services.json not found');
-  console.error('   Please ensure google-services.json is committed to git');
-  process.exit(1);
+  // Try multiple possible locations
+  const possiblePaths = [
+    googleServicesPath, // Root of frontend directory
+    path.join(__dirname, '..', 'google-services.json'), // Parent directory
+    path.join(process.cwd(), 'google-services.json'), // Current working directory
+  ];
+  
+  let foundPath = null;
+  for (const possiblePath of possiblePaths) {
+    if (fs.existsSync(possiblePath)) {
+      foundPath = possiblePath;
+      break;
+    }
+  }
+  
+  if (foundPath) {
+    console.log(`📝 Using google-services.json from ${path.relative(__dirname, foundPath)}...`);
+    googleServicesContent = fs.readFileSync(foundPath, 'utf8');
+  } else {
+    console.error('❌ Error: google-services.json not found in any expected location');
+    console.error('   Searched in:');
+    possiblePaths.forEach(p => console.error(`     - ${p}`));
+    console.error('   Please ensure google-services.json is committed to git');
+    // Don't exit - let the build continue and see if expo-build-properties can handle it
+    console.warn('⚠️  Continuing build - expo-build-properties may handle the file');
+  }
 }
 
 // Also ensure it's copied to Android directories if they exist or will be created
@@ -82,6 +100,8 @@ if (googleServicesContent) {
   writeGoogleServices(googleServicesContent, androidAppPath);
   writeGoogleServices(googleServicesContent, androidReleasePath);
   console.log('✅ Copied google-services.json to Android directories');
+} else {
+  console.warn('⚠️  Skipping Android directory copy - expo-build-properties will handle it');
 }
 
 module.exports = appJson;
