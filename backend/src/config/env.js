@@ -3,10 +3,17 @@ const path = require("path");
 
 dotenv.config({ path: path.join(__dirname, "../../.env") });
 
+// Debug: Log all environment variables (for troubleshooting)
+console.log("🔍 Debug: Checking environment variables...");
+console.log("🔍 Available env vars:", Object.keys(process.env).filter(k => k.includes("FIREBASE") || k.includes("JWT")).join(", "));
+console.log("🔍 FIREBASE_SERVICE_ACCOUNT_JSON exists:", !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+console.log("🔍 FIREBASE_SERVICE_ACCOUNT_JSON length:", process.env.FIREBASE_SERVICE_ACCOUNT_JSON ? process.env.FIREBASE_SERVICE_ACCOUNT_JSON.length : 0);
+
 function required(name) {
   if (!process.env[name]) {
     console.error(`❌ Missing required environment variable: ${name}`);
     console.error('Please set this variable in Railway dashboard → Variables');
+    console.error(`🔍 All env vars starting with FIREBASE:`, Object.keys(process.env).filter(k => k.startsWith("FIREBASE")));
     throw new Error(`Missing required env var: ${name}`);
   }
   return process.env[name];
