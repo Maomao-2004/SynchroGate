@@ -306,7 +306,7 @@ const initializeStudentAlertsListener = () => {
         previousStudentAlerts.set(studentId, allCurrentAlertIds);
         
         // CRITICAL: Only send to this specific student (document ID)
-        // Verify alert belongs to this student before sending
+        // Verify alert belongs to this student AND user is logged in before sending
         for (const alert of newAlerts) {
           // CRITICAL: Verify alert's studentId matches document ID
           const alertStudentId = alert.studentId || alert.student_id;
@@ -314,14 +314,33 @@ const initializeStudentAlertsListener = () => {
             const normalizedAlertStudentId = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
             const normalizedStudentId = String(studentId).replace(/-/g, '').trim().toLowerCase();
             if (normalizedAlertStudentId !== normalizedStudentId) {
-              console.log(`⏭️ Skipping alert ${alert.id || alert.alertId} - studentId (${alertStudentId}) doesn't match document ID (${studentId})`);
+              console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - studentId (${alertStudentId}) doesn't match document ID (${studentId})`);
               continue; // Alert doesn't belong to this student
             }
           } else {
             // If no studentId, set it to match document ID
             alert.studentId = studentId;
           }
-          console.log(`📨 Processing NEW alert for student ${studentId}: ${alert.id || alert.alertId}`);
+          
+          // DOUBLE CHECK: Verify user exists and is logged in BEFORE calling sendPushForAlert
+          const userDocCheck = await firestore.collection('users').doc(studentId).get();
+          if (!userDocCheck.exists) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${studentId} does not exist`);
+            continue;
+          }
+          
+          const userDataCheck = userDocCheck.data();
+          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken || (!userDataCheck?.lastLoginAt && !userDataCheck?.pushTokenUpdatedAt)) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} is not logged in`);
+            continue;
+          }
+          
+          if (String(userDataCheck.role).toLowerCase() !== 'student') {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} role (${userDataCheck.role}) is not student`);
+            continue;
+          }
+          
+          console.log(`📨 [LISTENER] Processing NEW alert for student ${studentId} (${userDataCheck.uid}): ${alert.id || alert.alertId}`);
           await sendPushForAlert(alert, 'student', studentId);
         }
       }
@@ -429,7 +448,7 @@ const initializeParentAlertsListener = () => {
         previousParentAlerts.set(parentId, allCurrentAlertIds);
         
         // CRITICAL: Only send to this specific parent (document ID)
-        // Verify alert belongs to this parent before sending
+        // Verify alert belongs to this parent AND user is logged in before sending
         for (const alert of newAlerts) {
           // CRITICAL: Verify alert's parentId matches document ID
           const alertParentId = alert.parentId || alert.parent_id;
@@ -437,14 +456,33 @@ const initializeParentAlertsListener = () => {
             const normalizedAlertParentId = String(alertParentId).replace(/-/g, '').trim().toLowerCase();
             const normalizedParentId = String(parentId).replace(/-/g, '').trim().toLowerCase();
             if (normalizedAlertParentId !== normalizedParentId) {
-              console.log(`⏭️ Skipping alert ${alert.id || alert.alertId} - parentId (${alertParentId}) doesn't match document ID (${parentId})`);
+              console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - parentId (${alertParentId}) doesn't match document ID (${parentId})`);
               continue; // Alert doesn't belong to this parent
             }
           } else {
             // If no parentId, set it to match document ID
             alert.parentId = parentId;
           }
-          console.log(`📨 Processing NEW alert for parent ${parentId}: ${alert.id || alert.alertId}`);
+          
+          // DOUBLE CHECK: Verify user exists and is logged in BEFORE calling sendPushForAlert
+          const userDocCheck = await firestore.collection('users').doc(parentId).get();
+          if (!userDocCheck.exists) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${parentId} does not exist`);
+            continue;
+          }
+          
+          const userDataCheck = userDocCheck.data();
+          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken || (!userDataCheck?.lastLoginAt && !userDataCheck?.pushTokenUpdatedAt)) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} is not logged in`);
+            continue;
+          }
+          
+          if (String(userDataCheck.role).toLowerCase() !== 'parent') {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} role (${userDataCheck.role}) is not parent`);
+            continue;
+          }
+          
+          console.log(`📨 [LISTENER] Processing NEW alert for parent ${parentId} (${userDataCheck.uid}): ${alert.id || alert.alertId}`);
           await sendPushForAlert(alert, 'parent', parentId);
         }
       }
