@@ -462,40 +462,11 @@ const initializeAdminAlertsListener = () => {
             return; // Skip if not authenticated
           }
           
-          // Check 4: User must have logged in recently (lastLoginAt within last 10 minutes)
-          const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-          if (!lastLoginAt) {
-            return; // Skip admins without login timestamp
-          }
-          
-          // Handle different timestamp formats
-          let lastLoginTime;
-          try {
-            if (lastLoginAt.toMillis) {
-              lastLoginTime = lastLoginAt.toMillis();
-            } else if (lastLoginAt.seconds) {
-              lastLoginTime = lastLoginAt.seconds * 1000;
-            } else if (typeof lastLoginAt === 'string') {
-              lastLoginTime = new Date(lastLoginAt).getTime();
-            } else if (typeof lastLoginAt === 'number') {
-              lastLoginTime = lastLoginAt;
-            } else {
-              return; // Invalid format
-            }
-          } catch (err) {
-            return; // Invalid timestamp
-          }
-          
-          if (isNaN(lastLoginTime) || lastLoginTime <= 0 || lastLoginTime > now + 60000) {
-            return; // Invalid timestamp
-          }
-          
+          // Check 4: User must have FCM token and be logged in (has role and UID)
           // No time window check - if they have a token, they can receive notifications
           // Real-time filtering is handled by alert creation time check
-          if (true) {
-            const userId = doc.id === 'Admin' ? 'Admin' : (userData?.uid || doc.id);
-            adminUserIds.push(userId);
-          }
+          const userId = doc.id === 'Admin' ? 'Admin' : (userData?.uid || doc.id);
+          adminUserIds.push(userId);
         });
         
         // If no logged-in admin users found, try the 'Admin' document (but still check if logged in)
