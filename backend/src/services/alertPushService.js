@@ -612,7 +612,6 @@ const initializeAdminAlertsListener = () => {
                     
                     if (lastLoginTime && !isNaN(lastLoginTime) && lastLoginTime > 0 && lastLoginTime <= now + 60000) {
                       const timeSinceLogin = now - lastLoginTime;
-                      const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes
                       if (timeSinceLogin <= TEN_MINUTES) {
                         adminUserIds.push('Admin');
                       }
