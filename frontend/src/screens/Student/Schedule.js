@@ -617,6 +617,60 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
           console.log('⚠️ Skipping write to parent_alerts due to non-canonical parent id:', pid);
           continue;
         }
+        
+        // CRITICAL: Only create alert if parent is logged in and is the intended recipient
+        // Verify parent user exists and is logged in BEFORE creating alert
+        let parentUserDoc = null;
+        try {
+          const parentDocRef = doc(db, 'users', String(targetPid));
+          const parentDocSnap = await getDoc(parentDocRef);
+          if (parentDocSnap.exists()) parentUserDoc = parentDocSnap;
+        } catch {}
+        
+        // Fallback: query by parentId field
+        if (!parentUserDoc) {
+          try {
+            const q = query(collection(db, 'users'), where('parentId', '==', targetPid));
+            const qsnap = await getDocs(q);
+            if (!qsnap.empty) parentUserDoc = qsnap.docs[0];
+          } catch {}
+        }
+        
+        // CRITICAL: Skip if parent user doesn't exist or is not logged in
+        if (!parentUserDoc || !parentUserDoc.exists()) {
+          console.log(`⏭️ Skipping alert creation - parent user document ${targetPid} does not exist`);
+          continue;
+        }
+        
+        const parentUserData = parentUserDoc.data();
+        // Must have: role, uid, fcmToken, and login timestamp
+        if (!parentUserData?.role || 
+            !parentUserData?.uid || 
+            !parentUserData?.fcmToken || 
+            (!parentUserData?.lastLoginAt && !parentUserData?.pushTokenUpdatedAt)) {
+          console.log(`⏭️ Skipping alert creation - parent ${targetPid} is not logged in (missing: role=${!!parentUserData?.role}, uid=${!!parentUserData?.uid}, fcmToken=${!!parentUserData?.fcmToken}, lastLoginAt=${!!(parentUserData?.lastLoginAt || parentUserData?.pushTokenUpdatedAt)})`);
+          continue;
+        }
+        
+        // Verify role is parent
+        if (String(parentUserData.role).toLowerCase() !== 'parent') {
+          console.log(`⏭️ Skipping alert creation - user ${targetPid} role (${parentUserData.role}) is not parent`);
+          continue;
+        }
+        
+        // Verify parentId matches document ID
+        const userParentId = parentUserData.parentId || parentUserData.parentIdNumber;
+        if (userParentId) {
+          const normalizedUserParentId = String(userParentId).replace(/-/g, '').trim().toLowerCase();
+          const normalizedTargetPid = String(targetPid).replace(/-/g, '').trim().toLowerCase();
+          if (normalizedUserParentId !== normalizedTargetPid) {
+            console.log(`⏭️ Skipping alert creation - user ${targetPid} parentId (${userParentId}) doesn't match document ID`);
+            continue;
+          }
+        }
+        
+        console.log(`✅ Creating alert for logged-in parent ${targetPid} (${parentUserData.uid})`);
+        
         const notifItem = {
           id: `sched_${studentId}_${type}_${uniqueSuffix}`,
           type,
@@ -624,7 +678,7 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
           message,
           createdAt: nowIso,
           status: 'unread',
-          parentId: pid,
+          parentId: targetPid, // Use targetPid (canonical) not pid
           studentId: String(studentId),
           studentName: studentName || 'Student',
           subject: subject || null,
