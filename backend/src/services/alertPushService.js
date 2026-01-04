@@ -42,6 +42,7 @@ const sendPushForAlert = async (alert, role, userId) => {
     if (role === 'student') {
       const alertStudentId = alert.studentId || alert.student_id;
       if (!alertStudentId) {
+        console.log(`⏭️ Skipping push - alert ${alertId} has no studentId`);
         return; // No studentId in alert
       }
       // Normalize both IDs (remove dashes) for comparison
@@ -49,11 +50,13 @@ const sendPushForAlert = async (alert, role, userId) => {
       const normalizedUserId = String(userId).replace(/-/g, '').trim();
       // Also check exact match (in case one has dashes and other doesn't)
       if (normalizedAlertStudentId !== normalizedUserId && alertStudentId !== userId) {
+        console.log(`⏭️ Skipping push - alert ${alertId} studentId (${alertStudentId}) doesn't match userId (${userId})`);
         return; // Wrong student - IDs don't match
       }
     } else if (role === 'parent') {
       const alertParentId = alert.parentId || alert.parent_id;
       if (!alertParentId) {
+        console.log(`⏭️ Skipping push - alert ${alertId} has no parentId`);
         return; // No parentId in alert
       }
       // Normalize both IDs (remove dashes) for comparison
@@ -61,6 +64,7 @@ const sendPushForAlert = async (alert, role, userId) => {
       const normalizedUserId = String(userId).replace(/-/g, '').trim();
       // Also check exact match (in case one has dashes and other doesn't)
       if (normalizedAlertParentId !== normalizedUserId && alertParentId !== userId) {
+        console.log(`⏭️ Skipping push - alert ${alertId} parentId (${alertParentId}) doesn't match userId (${userId})`);
         return; // Wrong parent - IDs don't match
       }
     }
