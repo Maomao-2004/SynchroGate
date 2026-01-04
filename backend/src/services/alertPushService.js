@@ -112,6 +112,28 @@ const sendPushForAlert = async (alert, role, userId) => {
     if (!fcmToken) {
       return; // No FCM token
     }
+    
+    // CRITICAL: Only send to users who are actually logged in
+    // Check if FCM token was updated recently (within last 24 hours)
+    // This indicates the user logged in recently and is active
+    const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
+    if (pushTokenUpdatedAt) {
+      const tokenUpdateTime = pushTokenUpdatedAt.toMillis ? pushTokenUpdatedAt.toMillis() : new Date(pushTokenUpdatedAt).getTime();
+      const timeSinceTokenUpdate = now - tokenUpdateTime;
+      const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+      
+      // If token is older than 24 hours, user is likely not logged in
+      if (timeSinceTokenUpdate > TWENTY_FOUR_HOURS) {
+        console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 60 * 1000))} hours old)`);
+        return; // User hasn't logged in recently, skip notification
+      }
+    } else {
+      // No pushTokenUpdatedAt timestamp - token might be stale
+      // Only send if we're confident the user is active
+      // For now, we'll be conservative and skip if no timestamp
+      console.log(`⏭️ Skipping push notification - user ${userId} has no pushTokenUpdatedAt timestamp`);
+      return;
+    }
 
     // Build notification title and body
     const alertType = alert.type || alert.alertType;
