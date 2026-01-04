@@ -184,103 +184,32 @@ const sendPushForAlert = async (alert, role, userId) => {
       return; // Role mismatch
     }
     
-    // Check 4: User must have logged in recently (lastLoginAt within last 10 minutes - EXTREMELY strict)
-    // This ensures user is currently active and logged in
+    // Check 4: Get login time to filter real-time alerts only
+    // We only send alerts created AFTER user logged in (real-time only, no old alerts)
     const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-    if (!lastLoginAt) {
-      // No login timestamp - definitely not logged in
-      console.log(`⏭️ Skipping push notification - user ${userId} has no lastLoginAt timestamp (not logged in)`);
-      return;
-    }
+    let lastLoginTime = null;
     
-    // Parse lastLoginAt timestamp
-    let lastLoginTime;
-    try {
-      if (lastLoginAt.toMillis) {
-        lastLoginTime = lastLoginAt.toMillis();
-      } else if (lastLoginAt.seconds) {
-        lastLoginTime = lastLoginAt.seconds * 1000;
-      } else if (typeof lastLoginAt === 'string') {
-        const parsedDate = new Date(lastLoginAt);
-        if (isNaN(parsedDate.getTime())) {
-          throw new Error('Invalid date string');
+    if (lastLoginAt) {
+      // Parse lastLoginAt timestamp for real-time filtering
+      try {
+        if (lastLoginAt.toMillis) {
+          lastLoginTime = lastLoginAt.toMillis();
+        } else if (lastLoginAt.seconds) {
+          lastLoginTime = lastLoginAt.seconds * 1000;
+        } else if (typeof lastLoginAt === 'string') {
+          const parsedDate = new Date(lastLoginAt);
+          if (!isNaN(parsedDate.getTime())) {
+            lastLoginTime = parsedDate.getTime();
+          }
+        } else if (typeof lastLoginAt === 'number') {
+          lastLoginTime = lastLoginAt;
         }
-        lastLoginTime = parsedDate.getTime();
-      } else if (typeof lastLoginAt === 'number') {
-        lastLoginTime = lastLoginAt;
-      } else {
-        throw new Error('Unknown timestamp format');
+      } catch (err) {
+        // If we can't parse, we'll skip real-time filtering but still allow notification
       }
-    } catch (err) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid lastLoginAt format: ${err.message}`);
-      return;
     }
     
-    if (isNaN(lastLoginTime) || lastLoginTime <= 0 || lastLoginTime > now + 60000) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid lastLoginAt value: ${lastLoginTime}`);
-      return;
-    }
-    
-    const timeSinceLogin = now - lastLoginTime;
-    
-    // If user logged in more than 10 minutes ago, they're likely not active
-    if (timeSinceLogin > TEN_MINUTES) {
-      console.log(`⏭️ Skipping push notification - user ${userId} logged in too long ago (${Math.round(timeSinceLogin / (60 * 1000))} minutes ago, max 10 minutes)`);
-      return;
-    }
-    
-    // Check 5: FCM token was updated recently (within last 15 minutes - EXTREMELY strict)
-    // This indicates the user is currently logged in and active
-    const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
-    if (!pushTokenUpdatedAt) {
-      // No timestamp - definitely not logged in
-      console.log(`⏭️ Skipping push notification - user ${userId} has no pushTokenUpdatedAt timestamp (not logged in)`);
-      return;
-    }
-    
-    // Handle different timestamp formats
-    let tokenUpdateTime;
-    try {
-      if (pushTokenUpdatedAt.toMillis) {
-        // Firestore Timestamp
-        tokenUpdateTime = pushTokenUpdatedAt.toMillis();
-      } else if (pushTokenUpdatedAt.seconds) {
-        // Firestore Timestamp (seconds)
-        tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
-      } else if (typeof pushTokenUpdatedAt === 'string') {
-        // ISO string
-        const parsedDate = new Date(pushTokenUpdatedAt);
-        if (isNaN(parsedDate.getTime())) {
-          throw new Error('Invalid date string');
-        }
-        tokenUpdateTime = parsedDate.getTime();
-      } else if (typeof pushTokenUpdatedAt === 'number') {
-        // Unix timestamp (milliseconds)
-        tokenUpdateTime = pushTokenUpdatedAt;
-      } else {
-        throw new Error('Unknown timestamp format');
-      }
-    } catch (err) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt format: ${err.message}`);
-      return;
-    }
-    
-    // Check if timestamp is valid
-    if (isNaN(tokenUpdateTime) || tokenUpdateTime <= 0 || tokenUpdateTime > now + 60000) {
-      // Timestamp is invalid, negative, or in the future (more than 1 minute)
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt value: ${tokenUpdateTime}`);
-      return;
-    }
-    
-    const timeSinceTokenUpdate = now - tokenUpdateTime;
-    
-    // If token is older than 10 minutes, user is likely not logged in
-    if (timeSinceTokenUpdate > TEN_MINUTES) {
-      console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 10 minutes)`);
-      return; // User hasn't logged in recently, skip notification
-    }
-    
-    // CRITICAL: Only send alerts created AFTER user logged in
+    // CRITICAL: Only send alerts created AFTER user logged in (real-time only)
     // This prevents sending old unread alerts when user logs in
     const alertCreatedAt = alert.createdAt || alert.timestamp || alert.id;
     if (alertCreatedAt) {
