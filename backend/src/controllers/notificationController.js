@@ -208,22 +208,72 @@ const sendAlertPushNotification = async (req, res, next) => {
     const body = alert.message || alert.body || 'You have a new alert';
     
     // Send push notification
-    const result = await pushService.sendPush(
-      fcmToken,
-      title,
-      body,
-      {
-        type: 'alert',
-        alertId: alert.id || alert.alertId,
-        alertType: alert.type || alert.alertType,
-        studentId: alert.studentId || '',
-        parentId: alert.parentId || '',
-        status: alert.status || 'unread',
-        ...alert // Include all alert data
+    let result;
+    try {
+      result = await pushService.sendPush(
+        fcmToken,
+        title,
+        body,
+        {
+          type: 'alert',
+          alertId: alert.id || alert.alertId,
+          alertType: alert.type || alert.alertType,
+          studentId: alert.studentId || '',
+          parentId: alert.parentId || '',
+          status: alert.status || 'unread',
+          ...alert // Include all alert data
+        }
+      );
+    } catch (pushError) {
+      // Handle FCM errors gracefully
+      console.error('❌ FCM push notification failed:', pushError);
+      
+      // If token is invalid/unregistered, mark it in the database
+      if (pushError.code === 'messaging/registration-token-not-registered' || 
+          pushError.code === 'messaging/invalid-registration-token') {
+        console.log(`⚠️ Invalid FCM token detected for user ${userId}, removing from database`);
+        
+        // Remove invalid token from user document
+        try {
+          await firestore.collection('users').doc(userId).update({
+            fcmToken: null,
+            pushTokenType: null,
+            pushTokenUpdatedAt: null,
+            fcmTokenError: 'Token invalid - user needs to re-register',
+            fcmTokenErrorAt: new Date()
+          });
+        } catch (updateError) {
+          console.error('Failed to update user document:', updateError);
+        }
       }
-    );
+      
+      // Log notification failure
+      const notificationsRef = firestore.collection('notifications');
+      await notificationsRef.add({
+        type: "PUSH_ALERT",
+        recipient: userId,
+        role: role,
+        alertId: alert.id || alert.alertId,
+        message: body,
+        title,
+        status: "failed",
+        error: pushError.message,
+        errorCode: pushError.code,
+        sentAt: new Date(),
+        createdAt: new Date()
+      });
 
-    // Log notification
+      return res.status(500).json({ 
+        error: "Failed to send push notification",
+        details: pushError.message,
+        code: pushError.code,
+        message: pushError.code === 'messaging/registration-token-not-registered' 
+          ? "FCM token is invalid. User needs to rebuild app and log in again to get a new token."
+          : "Push notification failed. Please check the token and try again."
+      });
+    }
+
+    // Log successful notification
     const notificationsRef = firestore.collection('notifications');
     await notificationsRef.add({
       type: "PUSH_ALERT",

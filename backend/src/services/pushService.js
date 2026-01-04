@@ -63,18 +63,9 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   } catch (err) {
     console.error('❌ FCM push notification failed:', err);
     
-    // Handle specific FCM errors
-    if (err.code === 'messaging/invalid-registration-token' || 
-        err.code === 'messaging/registration-token-not-registered') {
-      console.error('Invalid or unregistered FCM token:', fcmToken);
-      return {
-        success: false,
-        error: 'Invalid or unregistered token',
-        code: err.code,
-      };
-    }
-    
-    throw new Error(`Failed to send push notification: ${err.message}`);
+    // Re-throw the error so the controller can handle it properly
+    // This allows the controller to update the database and provide better error messages
+    throw err;
   }
 };
 
