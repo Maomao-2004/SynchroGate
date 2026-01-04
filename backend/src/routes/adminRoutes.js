@@ -1,9 +1,9 @@
 // src/routes/adminRoutes.js
-import express from 'express';
-import adminController from '../controllers/adminController.js';
-import developerController from '../controllers/developerController.js'; // Assuming you have this
-import authMiddleware from '../middleware/authMiddleware.js';
-import roleMiddleware from '../middleware/roleMiddleware.js';
+const express = require('express');
+const adminController = require('../controllers/adminController');
+const logController = require('../controllers/logController');
+const authMiddleware = require('../middleware/authMiddleware');
+const roleMiddleware = require('../middleware/roleMiddleware');
 
 const router = express.Router();
 
@@ -13,11 +13,11 @@ router.use(roleMiddleware(['admin', 'developer']));
 
 // Admin & Developer shared routes
 router.get('/users', adminController.getUsers);
-router.post('/generate-qr', adminController.generateQR);
-router.get('/reports', adminController.getReports);
+router.post('/generate-qr', adminController.generateQRForUser);
+// router.get('/reports', adminController.getReports); // Method doesn't exist yet
 
-// Developer-only routes
-router.get('/system-logs', developerController.getSystemLogs);
-router.get('/arduino-events', developerController.getArduinoEvents);
+// Developer-only routes - using logController methods
+router.get('/system-logs', logController.getLogs);
+router.get('/arduino-events', logController.getArduinoEvents);
 
-export default router;
+module.exports = router;
