@@ -353,39 +353,83 @@ const initializeAllAlertListeners = async () => {
     // We'll use collection group queries or listen to all documents
     
     // Listen to all student_alerts documents
+    // Track previous state to only send notifications for NEW alerts
     const studentAlertsCollection = firestore.collection('student_alerts');
+    let previousStudentAlerts = new Map(); // studentId -> Set of alert IDs
+    
     studentAlertsCollection.onSnapshot(async (snapshot) => {
-      snapshot.docChanges().forEach(async (change) => {
+      const changes = snapshot.docChanges();
+      for (const change of changes) {
         if (change.type === 'modified' || change.type === 'added') {
           const studentId = change.doc.id;
           const data = change.doc.data() || {};
           const items = Array.isArray(data.items) ? data.items : [];
           
-          const unreadAlerts = items.filter(item => item.status === 'unread');
+          // Get previous alert IDs for this student
+          const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
+          const currentAlertIds = new Set();
+          
+          // Find NEW unread alerts (not in previous state)
+          const unreadAlerts = items.filter(item => {
+            const alertId = item.id || item.alertId;
+            if (item.status === 'unread' && alertId) {
+              currentAlertIds.add(alertId);
+              // Only send if this is a NEW alert (not in previous state)
+              return !previousAlertIds.has(alertId);
+            }
+            return false;
+          });
+          
+          // Update previous state
+          previousStudentAlerts.set(studentId, currentAlertIds);
+          
+          // Send push notifications only for NEW alerts to THIS specific student
           for (const alert of unreadAlerts) {
             await sendPushForAlert(alert, 'student', studentId);
           }
         }
-      });
+      }
     }, (error) => {
       console.error('Student alerts collection listener error:', error);
     });
     
     // Listen to all parent_alerts documents
+    // Track previous state to only send notifications for NEW alerts
     const parentAlertsCollection = firestore.collection('parent_alerts');
+    let previousParentAlerts = new Map(); // parentDocId -> Set of alert IDs
+    
     parentAlertsCollection.onSnapshot(async (snapshot) => {
-      snapshot.docChanges().forEach(async (change) => {
+      const changes = snapshot.docChanges();
+      for (const change of changes) {
         if (change.type === 'modified' || change.type === 'added') {
           const parentDocId = change.doc.id;
           const data = change.doc.data() || {};
           const items = Array.isArray(data.items) ? data.items : [];
           
-          const unreadAlerts = items.filter(item => item.status === 'unread');
+          // Get previous alert IDs for this parent
+          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
+          const currentAlertIds = new Set();
+          
+          // Find NEW unread alerts (not in previous state)
+          const unreadAlerts = items.filter(item => {
+            const alertId = item.id || item.alertId;
+            if (item.status === 'unread' && alertId) {
+              currentAlertIds.add(alertId);
+              // Only send if this is a NEW alert (not in previous state)
+              return !previousAlertIds.has(alertId);
+            }
+            return false;
+          });
+          
+          // Update previous state
+          previousParentAlerts.set(parentDocId, currentAlertIds);
+          
+          // Send push notifications only for NEW alerts to THIS specific parent
           for (const alert of unreadAlerts) {
             await sendPushForAlert(alert, 'parent', parentDocId);
           }
         }
-      });
+      }
     }, (error) => {
       console.error('Parent alerts collection listener error:', error);
     });
