@@ -1,6 +1,7 @@
 // globalPushNotificationService.js - Global push notification listener for all user roles
 import { doc, getDoc, onSnapshot, collection, query, where, getDocs, updateDoc, setDoc, arrayUnion } from 'firebase/firestore';
 import { db } from '../utils/firebaseConfig';
+import { sendAlertPushNotification } from '../utils/pushNotificationHelper';
 
 let globalListenerActive = false;
 let currentUser = null;
@@ -261,11 +262,43 @@ const sendPushNotificationForAlert = async (alert, role) => {
       }
     }
     
-    // Local notification removed - using real-time FCM push notifications instead
-    // Real-time FCM push notifications are sent from the backend when alerts are created
-    // This listener is kept for tracking purposes but no longer schedules local notifications
+    // Send push notification via backend API
+    // Determine the correct userId based on role
+    let targetUserId;
+    if (role === 'admin') {
+      targetUserId = 'Admin'; // Admin users are stored under "Admin" document
+    } else if (role === 'developer') {
+      targetUserId = 'Developer'; // Developer users are stored under "Developer" document
+    } else if (role === 'parent') {
+      // Try to get canonical parentId from currentUser or alert
+      if (currentUser) {
+        const parentDocId = await getParentDocId(currentUser);
+        targetUserId = parentDocId;
+      } else {
+        const parentId = alert.parentId;
+        targetUserId = (parentId && String(parentId).includes('-')) ? String(parentId) : parentId || 'unknown';
+      }
+    } else if (role === 'student') {
+      targetUserId = alert.studentId || currentUser?.studentId || 'unknown';
+    } else {
+      targetUserId = 'unknown';
+    }
     
-    console.log('🔔 Alert detected (real-time FCM push notification will be sent from backend):', title, 'for role:', role);
+    console.log('🔔 Alert detected, sending push notification via backend:', {
+      title,
+      role,
+      targetUserId,
+      alertId: alert.id
+    });
+    
+    // Call the backend API to send push notification
+    try {
+      await sendAlertPushNotification(alert, targetUserId, role);
+      console.log('✅ Push notification sent successfully for alert:', alert.id);
+    } catch (error) {
+      console.error('❌ Failed to send push notification for alert:', alert.id, error);
+      // Don't throw - this is non-blocking
+    }
   } catch (error) {
     console.error('Error sending global push notification:', error);
   }
