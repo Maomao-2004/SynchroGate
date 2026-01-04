@@ -189,10 +189,13 @@ export default function usePushNotifications() {
           
           // Save FCM token only (no Expo fallback)
           // IMPORTANT: Save role and UID together with token to ensure user is logged in
+          const now = new Date().toISOString();
           const tokenData = {
             fcmToken: fcmToken,
             pushTokenType: 'fcm',
-            pushTokenUpdatedAt: new Date().toISOString(),
+            pushTokenUpdatedAt: now,
+            // CRITICAL: Track when user logged in - only send alerts created AFTER this time
+            lastLoginAt: now, // Track login time to ignore old alerts
             // CRITICAL: Always save role and UID with token to verify user is logged in
             role: user.role,
             uid: user.uid,

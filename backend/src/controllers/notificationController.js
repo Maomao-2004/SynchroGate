@@ -321,15 +321,52 @@ const sendAlertPushNotification = async (req, res, next) => {
     }
     
     const timeSinceTokenUpdate = now - tokenUpdateTime;
-    const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
+    const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes
     
-    // If token is older than 15 minutes, user is likely not logged in
-    if (timeSinceTokenUpdate > FIFTEEN_MINUTES) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 15 minutes)`);
+    // If token is older than 10 minutes, user is likely not logged in
+    if (timeSinceTokenUpdate > TEN_MINUTES) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 10 minutes)`);
       return res.status(403).json({ 
         error: "User not logged in",
         message: "User has not logged in recently. Please log in again."
       });
+    }
+    
+    // CRITICAL: Only send alerts created AFTER user logged in
+    // This prevents sending old unread alerts when user logs in
+    const alertCreatedAt = alert.createdAt || alert.timestamp || alert.id;
+    if (alertCreatedAt) {
+      let alertTime;
+      try {
+        // Try to extract timestamp from alert ID (format: timestamp_random)
+        if (typeof alertCreatedAt === 'string' && alertCreatedAt.includes('_')) {
+          const timestampPart = alertCreatedAt.split('_')[0];
+          alertTime = parseInt(timestampPart, 10);
+          if (isNaN(alertTime)) {
+            alertTime = new Date(alertCreatedAt).getTime();
+          }
+        } else if (typeof alertCreatedAt === 'string') {
+          alertTime = new Date(alertCreatedAt).getTime();
+        } else if (typeof alertCreatedAt === 'number') {
+          alertTime = alertCreatedAt;
+        }
+        
+        // If we have both alert time and login time, only send if alert was created AFTER login
+        if (alertTime && !isNaN(alertTime) && lastLoginTime && alertTime < lastLoginTime) {
+          console.log(`⏭️ Rejecting push notification - alert ${alert.id || alert.alertId} was created before user ${userId} logged in (old alert)`);
+          return res.status(403).json({ 
+            error: "Old alert",
+            message: "This alert was created before you logged in. Only new alerts are sent."
+          });
+        }
+      } catch (err) {
+        // If we can't parse alert time, be conservative and skip
+        console.log(`⏭️ Rejecting push notification - cannot parse alert creation time for ${alert.id || alert.alertId}`);
+        return res.status(403).json({ 
+          error: "Invalid alert timestamp",
+          message: "Cannot determine when this alert was created."
+        });
+      }
     }
 
     // userData is already set above

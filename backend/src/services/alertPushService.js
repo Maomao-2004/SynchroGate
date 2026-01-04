@@ -181,7 +181,53 @@ const sendPushForAlert = async (alert, role, userId) => {
       return; // Role mismatch
     }
     
-    // Check 4: FCM token was updated recently (within last 15 minutes - EXTREMELY strict)
+    // Check 4: User must have logged in recently (lastLoginAt within last 10 minutes - EXTREMELY strict)
+    // This ensures user is currently active and logged in
+    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
+    if (!lastLoginAt) {
+      // No login timestamp - definitely not logged in
+      console.log(`⏭️ Skipping push notification - user ${userId} has no lastLoginAt timestamp (not logged in)`);
+      return;
+    }
+    
+    // Parse lastLoginAt timestamp
+    let lastLoginTime;
+    try {
+      if (lastLoginAt.toMillis) {
+        lastLoginTime = lastLoginAt.toMillis();
+      } else if (lastLoginAt.seconds) {
+        lastLoginTime = lastLoginAt.seconds * 1000;
+      } else if (typeof lastLoginAt === 'string') {
+        const parsedDate = new Date(lastLoginAt);
+        if (isNaN(parsedDate.getTime())) {
+          throw new Error('Invalid date string');
+        }
+        lastLoginTime = parsedDate.getTime();
+      } else if (typeof lastLoginAt === 'number') {
+        lastLoginTime = lastLoginAt;
+      } else {
+        throw new Error('Unknown timestamp format');
+      }
+    } catch (err) {
+      console.log(`⏭️ Skipping push notification - user ${userId} has invalid lastLoginAt format: ${err.message}`);
+      return;
+    }
+    
+    if (isNaN(lastLoginTime) || lastLoginTime <= 0 || lastLoginTime > now + 60000) {
+      console.log(`⏭️ Skipping push notification - user ${userId} has invalid lastLoginAt value: ${lastLoginTime}`);
+      return;
+    }
+    
+    const timeSinceLogin = now - lastLoginTime;
+    const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes
+    
+    // If user logged in more than 10 minutes ago, they're likely not active
+    if (timeSinceLogin > TEN_MINUTES) {
+      console.log(`⏭️ Skipping push notification - user ${userId} logged in too long ago (${Math.round(timeSinceLogin / (60 * 1000))} minutes ago, max 10 minutes)`);
+      return;
+    }
+    
+    // Check 5: FCM token was updated recently (within last 15 minutes - EXTREMELY strict)
     // This indicates the user is currently logged in and active
     const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
     if (!pushTokenUpdatedAt) {
@@ -535,25 +581,29 @@ const initializeAdminAlertsListener = () => {
                 if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
                   // Skip
                 } else {
-                  // Check 4: FCM token was updated recently
-                  const pushTokenUpdatedAt = adminData?.pushTokenUpdatedAt;
-                  if (pushTokenUpdatedAt) {
+                  // Check 4: User must have logged in recently (lastLoginAt within last 10 minutes)
+                  const lastLoginAt = adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt;
+                  if (lastLoginAt) {
                     // Handle different timestamp formats
-                    let tokenUpdateTime;
-                    if (pushTokenUpdatedAt.toMillis) {
-                      tokenUpdateTime = pushTokenUpdatedAt.toMillis();
-                    } else if (pushTokenUpdatedAt.seconds) {
-                      tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
-                    } else if (typeof pushTokenUpdatedAt === 'string') {
-                      tokenUpdateTime = new Date(pushTokenUpdatedAt).getTime();
-                    } else if (typeof pushTokenUpdatedAt === 'number') {
-                      tokenUpdateTime = pushTokenUpdatedAt;
+                    let lastLoginTime;
+                    try {
+                      if (lastLoginAt.toMillis) {
+                        lastLoginTime = lastLoginAt.toMillis();
+                      } else if (lastLoginAt.seconds) {
+                        lastLoginTime = lastLoginAt.seconds * 1000;
+                      } else if (typeof lastLoginAt === 'string') {
+                        lastLoginTime = new Date(lastLoginAt).getTime();
+                      } else if (typeof lastLoginAt === 'number') {
+                        lastLoginTime = lastLoginAt;
+                      }
+                    } catch (err) {
+                      // Invalid format
                     }
                     
-                    if (tokenUpdateTime && !isNaN(tokenUpdateTime) && tokenUpdateTime > 0) {
-                      const timeSinceTokenUpdate = now - tokenUpdateTime;
-                      const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
-                      if (timeSinceTokenUpdate <= FIFTEEN_MINUTES) {
+                    if (lastLoginTime && !isNaN(lastLoginTime) && lastLoginTime > 0 && lastLoginTime <= now + 60000) {
+                      const timeSinceLogin = now - lastLoginTime;
+                      const TEN_MINUTES = 10 * 60 * 1000; // EXTREMELY strict: only 10 minutes
+                      if (timeSinceLogin <= TEN_MINUTES) {
                         adminUserIds.push('Admin');
                       }
                     }
@@ -599,10 +649,38 @@ const initializeAllAlertListeners = async () => {
     const studentAlertsCollection = firestore.collection('student_alerts');
     let previousStudentAlerts = new Map(); // studentId -> Set of alert IDs
     
+    // Track when listener started to ignore initial snapshot
+    const listenerStartTime = Date.now();
+    let isInitialSnapshot = true;
+    
     studentAlertsCollection.onSnapshot(async (snapshot) => {
+      // CRITICAL: Ignore initial snapshot - only process changes after listener starts
+      // This prevents sending old unread alerts when server starts
+      if (isInitialSnapshot) {
+        // Initialize previous state with all current alerts (so we only process NEW ones)
+        snapshot.docs.forEach(doc => {
+          const studentId = doc.id;
+          const data = doc.data() || {};
+          const items = Array.isArray(data.items) ? data.items : [];
+          const currentAlertIds = new Set();
+          items.forEach(item => {
+            const alertId = item.id || item.alertId;
+            if (alertId) {
+              currentAlertIds.add(alertId);
+            }
+          });
+          previousStudentAlerts.set(studentId, currentAlertIds);
+        });
+        isInitialSnapshot = false;
+        console.log('✅ Student alerts listener initialized - ignoring initial snapshot');
+        return; // Don't process initial snapshot
+      }
+      
+      // Only process actual changes (new alerts added/modified)
       const changes = snapshot.docChanges();
       for (const change of changes) {
-        if (change.type === 'modified' || change.type === 'added') {
+        // Only process 'added' changes (new alerts), not 'modified' (to avoid duplicates)
+        if (change.type === 'added') {
           const studentId = change.doc.id;
           const data = change.doc.data() || {};
           const items = Array.isArray(data.items) ? data.items : [];
@@ -629,27 +707,13 @@ const initializeAllAlertListeners = async () => {
           for (const alert of unreadAlerts) {
             await sendPushForAlert(alert, 'student', studentId);
           }
-        }
-      }
-    }, (error) => {
-      console.error('Student alerts collection listener error:', error);
-    });
-    
-    // Listen to all parent_alerts documents
-    // Track previous state to only send notifications for NEW alerts
-    const parentAlertsCollection = firestore.collection('parent_alerts');
-    let previousParentAlerts = new Map(); // parentDocId -> Set of alert IDs
-    
-    parentAlertsCollection.onSnapshot(async (snapshot) => {
-      const changes = snapshot.docChanges();
-      for (const change of changes) {
-        if (change.type === 'modified' || change.type === 'added') {
-          const parentDocId = change.doc.id;
+        } else if (change.type === 'modified') {
+          // For modified documents, check if new alerts were added
+          const studentId = change.doc.id;
           const data = change.doc.data() || {};
           const items = Array.isArray(data.items) ? data.items : [];
           
-          // Get previous alert IDs for this parent
-          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
+          const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
           const currentAlertIds = new Set();
           
           // Find NEW unread alerts (not in previous state)
@@ -664,9 +728,89 @@ const initializeAllAlertListeners = async () => {
           });
           
           // Update previous state
+          previousStudentAlerts.set(studentId, currentAlertIds);
+          
+          // Send push notifications only for NEW alerts
+          for (const alert of unreadAlerts) {
+            await sendPushForAlert(alert, 'student', studentId);
+          }
+        }
+      }
+    }, (error) => {
+      console.error('Student alerts collection listener error:', error);
+    });
+    
+    // Listen to all parent_alerts documents
+    // Track previous state to only send notifications for NEW alerts
+    const parentAlertsCollection = firestore.collection('parent_alerts');
+    let previousParentAlerts = new Map(); // parentDocId -> Set of alert IDs
+    let isInitialParentSnapshot = true;
+    
+    parentAlertsCollection.onSnapshot(async (snapshot) => {
+      // CRITICAL: Ignore initial snapshot - only process changes after listener starts
+      if (isInitialParentSnapshot) {
+        snapshot.docs.forEach(doc => {
+          const parentDocId = doc.id;
+          const data = doc.data() || {};
+          const items = Array.isArray(data.items) ? data.items : [];
+          const currentAlertIds = new Set();
+          items.forEach(item => {
+            const alertId = item.id || item.alertId;
+            if (alertId) {
+              currentAlertIds.add(alertId);
+            }
+          });
+          previousParentAlerts.set(parentDocId, currentAlertIds);
+        });
+        isInitialParentSnapshot = false;
+        console.log('✅ Parent alerts listener initialized - ignoring initial snapshot');
+        return; // Don't process initial snapshot
+      }
+      
+      // Only process actual changes (new alerts added/modified)
+      const changes = snapshot.docChanges();
+      for (const change of changes) {
+        if (change.type === 'added') {
+          const parentDocId = change.doc.id;
+          const data = change.doc.data() || {};
+          const items = Array.isArray(data.items) ? data.items : [];
+          
+          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
+          const currentAlertIds = new Set();
+          
+          const unreadAlerts = items.filter(item => {
+            const alertId = item.id || item.alertId;
+            if (item.status === 'unread' && alertId) {
+              currentAlertIds.add(alertId);
+              return !previousAlertIds.has(alertId);
+            }
+            return false;
+          });
+          
           previousParentAlerts.set(parentDocId, currentAlertIds);
           
-          // Send push notifications only for NEW alerts to THIS specific parent
+          for (const alert of unreadAlerts) {
+            await sendPushForAlert(alert, 'parent', parentDocId);
+          }
+        } else if (change.type === 'modified') {
+          const parentDocId = change.doc.id;
+          const data = change.doc.data() || {};
+          const items = Array.isArray(data.items) ? data.items : [];
+          
+          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
+          const currentAlertIds = new Set();
+          
+          const unreadAlerts = items.filter(item => {
+            const alertId = item.id || item.alertId;
+            if (item.status === 'unread' && alertId) {
+              currentAlertIds.add(alertId);
+              return !previousAlertIds.has(alertId);
+            }
+            return false;
+          });
+          
+          previousParentAlerts.set(parentDocId, currentAlertIds);
+          
           for (const alert of unreadAlerts) {
             await sendPushForAlert(alert, 'parent', parentDocId);
           }
