@@ -177,34 +177,48 @@ dependencies {
 }
 
 // Copy google-services.json to release/debug directories before Google Services plugin runs
-// This ensures the file is available for both debug and release builds
+// Try multiple possible locations for the file
 task copyGoogleServices(type: Copy) {
-    def sourceFile = file("google-services.json")
-    def targetDir = file("src/release")
-    def targetFile = new File(targetDir, "google-services.json")
+    def possibleSources = [
+        file("google-services.json"),  // Same directory (android/app/)
+        file("../../google-services.json"),  // Root frontend directory
+        file("src/main/google-services.json")  // Alternative location
+    ]
     
-    // Only copy if source exists and target doesn't
-    if (sourceFile.exists()) {
+    def sourceFile = possibleSources.find { it.exists() }
+    def targetDir = file("src/release")
+    
+    if (sourceFile) {
         targetDir.mkdirs()
         from sourceFile
         into targetDir
+        println "✅ Copied google-services.json from ${sourceFile.absolutePath} to ${targetDir.absolutePath}"
     } else {
-        println "WARNING: google-services.json not found at ${sourceFile.absolutePath}"
+        println "❌ ERROR: google-services.json not found in any of these locations:"
+        possibleSources.each { println "   - ${it.absolutePath}" }
+        throw new GradleException("google-services.json is required but not found. Please ensure it exists in android/app/ or frontend root.")
     }
 }
 
 task copyGoogleServicesDebug(type: Copy) {
-    def sourceFile = file("google-services.json")
-    def targetDir = file("src/debug")
-    def targetFile = new File(targetDir, "google-services.json")
+    def possibleSources = [
+        file("google-services.json"),  // Same directory (android/app/)
+        file("../../google-services.json"),  // Root frontend directory
+        file("src/main/google-services.json")  // Alternative location
+    ]
     
-    // Only copy if source exists and target doesn't
-    if (sourceFile.exists()) {
+    def sourceFile = possibleSources.find { it.exists() }
+    def targetDir = file("src/debug")
+    
+    if (sourceFile) {
         targetDir.mkdirs()
         from sourceFile
         into targetDir
+        println "✅ Copied google-services.json from ${sourceFile.absolutePath} to ${targetDir.absolutePath}"
     } else {
-        println "WARNING: google-services.json not found at ${sourceFile.absolutePath}"
+        println "❌ ERROR: google-services.json not found in any of these locations:"
+        possibleSources.each { println "   - ${it.absolutePath}" }
+        throw new GradleException("google-services.json is required but not found. Please ensure it exists in android/app/ or frontend root.")
     }
 }
 
