@@ -57,21 +57,60 @@ const Developer = () => {
       setLoading(true);
       console.log('🧪 Testing push notification...');
       
-      // Get current user's document to find their ID
-      const userDocId = user?.uid || user?.studentId || user?.parentId || 'Admin';
+      // Get current user's document ID - admin/developer use "Admin"/"Developer", others use their ID
       const userRole = user?.role || 'admin';
+      const roleLower = String(userRole).toLowerCase();
+      let userDocId;
       
-      // Get FCM token from Firestore
+      if (roleLower === 'admin') {
+        userDocId = 'Admin';
+      } else if (roleLower === 'developer') {
+        userDocId = 'Developer';
+      } else if (roleLower === 'parent') {
+        // Try to get canonical parentId
+        const parentId = user?.parentId;
+        userDocId = (parentId && String(parentId).includes('-')) ? String(parentId) : user?.uid;
+      } else if (roleLower === 'student') {
+        userDocId = user?.studentId || user?.uid;
+      } else {
+        userDocId = user?.uid || 'Admin';
+      }
+      
+      console.log('🔍 User document ID:', userDocId, 'Role:', userRole);
+      
+      // Get FCM token from Firestore - try multiple possible document IDs
       let fcmToken = null;
-      try {
-        const userRef = doc(db, 'users', userDocId);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          fcmToken = userSnap.data()?.fcmToken;
-          console.log('🔑 FCM Token found:', fcmToken ? fcmToken.substring(0, 20) + '...' : 'NOT FOUND');
+      const possibleIds = [userDocId];
+      
+      // Also try UID if different
+      if (user?.uid && user.uid !== userDocId) {
+        possibleIds.push(user.uid);
+      }
+      
+      // For admin, also try "Admin"
+      if (roleLower === 'admin' && userDocId !== 'Admin') {
+        possibleIds.push('Admin');
+      }
+      
+      for (const docId of possibleIds) {
+        try {
+          const userRef = doc(db, 'users', docId);
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists()) {
+            const data = userSnap.data();
+            if (data?.fcmToken) {
+              fcmToken = data.fcmToken;
+              console.log(`🔑 FCM Token found in document: ${docId}`, fcmToken.substring(0, 20) + '...');
+              break;
+            }
+          }
+        } catch (err) {
+          console.log(`⚠️ Error checking document ${docId}:`, err.message);
         }
-      } catch (err) {
-        console.error('Error fetching user doc:', err);
+      }
+      
+      if (!fcmToken) {
+        console.log('⚠️ No FCM token found in any document. User needs to log in again to generate token.');
       }
 
       const testAlert = {
