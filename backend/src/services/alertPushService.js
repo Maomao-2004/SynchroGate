@@ -181,7 +181,14 @@ const sendPushForAlert = async (alert, role, userId) => {
       return; // Role mismatch
     }
     
-    // Check 4: FCM token was updated recently (within last 1 hour - very strict)
+    // Check 4: Verify role and UID in userData match what we expect (double-check)
+    // This ensures the token wasn't saved before role selection
+    if (userData.role !== userRole || userData.uid !== userUid) {
+      console.log(`⏭️ Skipping push notification - user ${userId} role/UID mismatch in document`);
+      return; // Data inconsistency - skip
+    }
+    
+    // Check 5: FCM token was updated recently (within last 30 minutes - very strict)
     // This indicates the user is currently logged in and active
     const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
     if (!pushTokenUpdatedAt) {
@@ -192,37 +199,71 @@ const sendPushForAlert = async (alert, role, userId) => {
     
     // Handle different timestamp formats
     let tokenUpdateTime;
-    if (pushTokenUpdatedAt.toMillis) {
-      // Firestore Timestamp
-      tokenUpdateTime = pushTokenUpdatedAt.toMillis();
-    } else if (pushTokenUpdatedAt.seconds) {
-      // Firestore Timestamp (seconds)
-      tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
-    } else if (typeof pushTokenUpdatedAt === 'string') {
-      // ISO string
-      tokenUpdateTime = new Date(pushTokenUpdatedAt).getTime();
-    } else if (typeof pushTokenUpdatedAt === 'number') {
-      // Unix timestamp (milliseconds)
-      tokenUpdateTime = pushTokenUpdatedAt;
-    } else {
-      // Unknown format - skip
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt format`);
+    try {
+      if (pushTokenUpdatedAt.toMillis) {
+        // Firestore Timestamp
+        tokenUpdateTime = pushTokenUpdatedAt.toMillis();
+      } else if (pushTokenUpdatedAt.seconds) {
+        // Firestore Timestamp (seconds)
+        tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
+      } else if (typeof pushTokenUpdatedAt === 'string') {
+        // ISO string
+        const parsedDate = new Date(pushTokenUpdatedAt);
+        if (isNaN(parsedDate.getTime())) {
+          throw new Error('Invalid date string');
+        }
+        tokenUpdateTime = parsedDate.getTime();
+      } else if (typeof pushTokenUpdatedAt === 'number') {
+        // Unix timestamp (milliseconds)
+        tokenUpdateTime = pushTokenUpdatedAt;
+      } else {
+        throw new Error('Unknown timestamp format');
+      }
+    } catch (err) {
+      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt format: ${err.message}`);
       return;
     }
     
     // Check if timestamp is valid
-    if (isNaN(tokenUpdateTime) || tokenUpdateTime <= 0) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt value`);
+    if (isNaN(tokenUpdateTime) || tokenUpdateTime <= 0 || tokenUpdateTime > now + 60000) {
+      // Timestamp is invalid, negative, or in the future (more than 1 minute)
+      console.log(`⏭️ Skipping push notification - user ${userId} has invalid pushTokenUpdatedAt value: ${tokenUpdateTime}`);
       return;
     }
     
     const timeSinceTokenUpdate = now - tokenUpdateTime;
-    const ONE_HOUR = 60 * 60 * 1000; // Very strict: only 1 hour
+    const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
     
-    // If token is older than 1 hour, user is likely not logged in
-    if (timeSinceTokenUpdate > ONE_HOUR) {
-      console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 60 minutes)`);
+    // If token is older than 30 minutes, user is likely not logged in
+    if (timeSinceTokenUpdate > THIRTY_MINUTES) {
+      console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 30 minutes)`);
       return; // User hasn't logged in recently, skip notification
+    }
+    
+    // Additional check: Verify token was saved AFTER role was set
+    // If role exists but token timestamp is older than role creation, skip
+    const userCreatedAt = userData?.createdAt || userData?.updatedAt;
+    if (userCreatedAt) {
+      let createdAtTime;
+      try {
+        if (userCreatedAt.toMillis) {
+          createdAtTime = userCreatedAt.toMillis();
+        } else if (userCreatedAt.seconds) {
+          createdAtTime = userCreatedAt.seconds * 1000;
+        } else if (typeof userCreatedAt === 'string') {
+          createdAtTime = new Date(userCreatedAt).getTime();
+        } else if (typeof userCreatedAt === 'number') {
+          createdAtTime = userCreatedAt;
+        }
+        
+        if (createdAtTime && !isNaN(createdAtTime) && tokenUpdateTime < createdAtTime) {
+          // Token was saved before user was created - this shouldn't happen, skip
+          console.log(`⏭️ Skipping push notification - user ${userId} token timestamp is before user creation`);
+          return;
+        }
+      } catch (err) {
+        // Ignore errors in createdAt parsing
+      }
     }
 
     // Build notification title and body
@@ -472,9 +513,10 @@ const initializeAdminAlertsListener = () => {
           }
           
           const timeSinceTokenUpdate = now - tokenUpdateTime;
+          const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
           
-          // Only include if token was updated within last 1 hour (user is currently logged in)
-          if (timeSinceTokenUpdate <= ONE_HOUR) {
+          // Only include if token was updated within last 30 minutes (user is currently logged in)
+          if (timeSinceTokenUpdate <= THIRTY_MINUTES) {
             const userId = doc.id === 'Admin' ? 'Admin' : (userData?.uid || doc.id);
             adminUserIds.push(userId);
           }
@@ -517,8 +559,8 @@ const initializeAdminAlertsListener = () => {
                     
                     if (tokenUpdateTime && !isNaN(tokenUpdateTime) && tokenUpdateTime > 0) {
                       const timeSinceTokenUpdate = now - tokenUpdateTime;
-                      const ONE_HOUR = 60 * 60 * 1000; // Very strict: only 1 hour
-                      if (timeSinceTokenUpdate <= ONE_HOUR) {
+                      const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
+                      if (timeSinceTokenUpdate <= THIRTY_MINUTES) {
                         adminUserIds.push('Admin');
                       }
                     }

@@ -158,11 +158,19 @@ export default function usePushNotifications() {
         tokenLength: token ? token.length : 0
       });
 
-      // Save token to backend for this user
-      if (token && user?.uid) {
+      // CRITICAL: Only save token if user is fully logged in with a role
+      // Don't save token if user is on role selection screen
+      if (token && user?.uid && user?.role) {
+        const roleLower = String(user.role).toLowerCase();
+        
+        // Validate role is one of the allowed roles
+        if (!['student', 'parent', 'admin', 'developer'].includes(roleLower)) {
+          console.log('⏭️ Not saving FCM token - invalid role:', roleLower);
+          return token; // Return token but don't save it
+        }
+        
         try {
           // Determine canonical document id for saving push token
-          const roleLower = String(user?.role || '').toLowerCase();
           const isParent = roleLower === 'parent';
           const isStudent = roleLower === 'student';
           const isDeveloper = roleLower === 'developer';
@@ -180,22 +188,25 @@ export default function usePushNotifications() {
           const userRef = doc(db, 'users', targetDocId);
           
           // Save FCM token only (no Expo fallback)
+          // IMPORTANT: Save role and UID together with token to ensure user is logged in
           const tokenData = {
             fcmToken: fcmToken,
             pushTokenType: 'fcm',
-            pushTokenUpdatedAt: new Date().toISOString()
-          };
-          
-          console.log('✅ Saving FCM token to Firestore');
-          
-          await setDoc(userRef, tokenData, { merge: true });
-          // Also ensure backlink fields are present to aid queries regardless of doc id choice
-          await setDoc(userRef, {
+            pushTokenUpdatedAt: new Date().toISOString(),
+            // CRITICAL: Always save role and UID with token to verify user is logged in
+            role: user.role,
             uid: user.uid,
             parentId: canonicalParentId || user.parentId || null,
             studentId: studentId || user.studentId || null,
-            role: user.role || null,
-          }, { merge: true });
+          };
+          
+          console.log('✅ Saving FCM token to Firestore for logged-in user:', {
+            role: user.role,
+            uid: user.uid,
+            targetDocId: targetDocId
+          });
+          
+          await setDoc(userRef, tokenData, { merge: true });
 
           console.log('✅ FCM token saved to Firestore:', {
             savedUnder: targetDocId,
