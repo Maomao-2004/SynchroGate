@@ -40,7 +40,8 @@ app.use(
 
 // Middleware
 app.use(express.json());
-app.use(morgan('dev'));
+// Use morgan only in development, or use 'combined' format in production
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Health check endpoint
 app.get('/', (req, res) => {
