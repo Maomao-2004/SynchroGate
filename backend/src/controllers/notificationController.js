@@ -173,18 +173,31 @@ const logNotificationEvent = async (req, res, next) => {
  */
 const sendAlertPushNotification = async (req, res, next) => {
   try {
+    console.log('📨 Received alert push notification request');
     const { alert, userId, role } = req.body;
     
+    console.log('📨 Request data:', {
+      hasAlert: !!alert,
+      userId: userId,
+      role: role,
+      alertId: alert?.id || alert?.alertId,
+      alertType: alert?.type || alert?.alertType
+    });
+    
     if (!alert || !userId) {
+      console.error('❌ Missing required fields:', { hasAlert: !!alert, hasUserId: !!userId });
       return res.status(400).json({ error: "Alert and userId are required" });
     }
 
     // Get user's FCM token from Firestore
+    console.log(`🔍 Looking up FCM token for user: ${userId}`);
     let userDoc = null;
     try {
       userDoc = await firestore.collection('users').doc(userId).get();
+      console.log(`📄 User document exists: ${userDoc.exists}`);
     } catch (err) {
-      console.error('Error fetching user document:', err);
+      console.error('❌ Error fetching user document:', err);
+      return res.status(500).json({ error: "Failed to fetch user document", details: err.message });
     }
 
     if (!userDoc || !userDoc.exists) {
@@ -195,17 +208,29 @@ const sendAlertPushNotification = async (req, res, next) => {
     const userData = userDoc.data();
     const fcmToken = userData?.fcmToken;
 
+    console.log(`🔑 FCM token status:`, {
+      hasToken: !!fcmToken,
+      tokenLength: fcmToken ? fcmToken.length : 0,
+      tokenPreview: fcmToken ? fcmToken.substring(0, 20) + '...' : 'none'
+    });
+
     if (!fcmToken) {
       console.log(`⚠️ No FCM token found for user: ${userId}`);
       return res.status(404).json({ 
         error: "FCM token not found for user",
-        message: "User has not registered for push notifications"
+        message: "User has not registered for push notifications. Please rebuild the app and log in again."
       });
     }
 
     // Build notification title and body from alert
     const title = alert.title || 'New Alert';
     const body = alert.message || alert.body || 'You have a new alert';
+    
+    console.log(`📤 Sending push notification:`, {
+      title,
+      body: body.substring(0, 50) + '...',
+      fcmToken: fcmToken.substring(0, 20) + '...'
+    });
     
     // Send push notification
     let result;
@@ -224,6 +249,7 @@ const sendAlertPushNotification = async (req, res, next) => {
           ...alert // Include all alert data
         }
       );
+      console.log('✅ Push notification sent successfully:', result);
     } catch (pushError) {
       // Handle FCM errors gracefully
       console.error('❌ FCM push notification failed:', pushError);

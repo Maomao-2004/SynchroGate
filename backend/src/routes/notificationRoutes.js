@@ -51,6 +51,11 @@ router.post(
 // from the frontend when alerts are created/updated
 router.post(
   '/alert-push',
+  (req, res, next) => {
+    console.log('📥 POST /api/notifications/alert-push received');
+    console.log('📥 Request body keys:', Object.keys(req.body || {}));
+    next();
+  },
   notificationController.sendAlertPushNotification
 );
 
