@@ -60,3 +60,8 @@ coverage/
 ECHO is on.
 # Lock Firebase rule debug artifacts
 frontend/debug-*.json
+
+# Firebase Admin SDK credentials (sensitive)
+**/*firebase-adminsdk*.json
+backend/guardientry-database-firebase-adminsdk-*.json
+frontend/guardientry-database-firebase-adminsdk-*.json
