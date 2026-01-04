@@ -181,14 +181,7 @@ const sendPushForAlert = async (alert, role, userId) => {
       return; // Role mismatch
     }
     
-    // Check 4: Verify role and UID in userData match what we expect (double-check)
-    // This ensures the token wasn't saved before role selection
-    if (userData.role !== userRole || userData.uid !== userUid) {
-      console.log(`⏭️ Skipping push notification - user ${userId} role/UID mismatch in document`);
-      return; // Data inconsistency - skip
-    }
-    
-    // Check 5: FCM token was updated recently (within last 30 minutes - very strict)
+    // Check 4: FCM token was updated recently (within last 15 minutes - EXTREMELY strict)
     // This indicates the user is currently logged in and active
     const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
     if (!pushTokenUpdatedAt) {
