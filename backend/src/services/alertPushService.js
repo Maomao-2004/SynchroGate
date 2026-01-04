@@ -1,770 +1,380 @@
 // alertPushService.js - Backend service to automatically send push notifications when alerts change
-// This works even when the app is closed because the backend is always running
+// SIMPLIFIED VERSION - Only send to logged-in users with proper role and links
 const { firestore, admin } = require('../config/firebase');
 const pushService = require('./pushService');
-
-// Constants (no longer used for time windows - only real-time alert filtering)
 
 let alertListeners = {
   student: null,
   parent: null,
   admin: null,
+  studentCollection: null,
+  parentCollection: null,
 };
 
-// Track which alerts we've already notified about (with time-based deduplication)
-const notifiedAlerts = new Map(); // alertId -> timestamp
+// Track which alerts we've already notified about (prevent duplicates)
+const notifiedAlerts = new Map(); // Key: `${alertId}_${userId}`, Value: timestamp
 
 /**
- * Get parent document ID from user data
- */
-const getParentDocId = async (parentId) => {
-  try {
-    // Try to get the user document
-    const userDoc = await firestore.collection('users').doc(parentId).get();
-    if (userDoc.exists) {
-      const data = userDoc.data();
-      const parentIdCanonical = data?.parentId || data?.parentIdNumber || parentId;
-      if (String(parentIdCanonical).includes('-')) {
-        return String(parentIdCanonical);
-      }
-    }
-    
-    // Try parent_student_links
-    const linksQuery = await firestore.collection('parent_student_links')
-      .where('parentId', '==', parentId)
-      .where('status', '==', 'active')
-      .limit(1)
-      .get();
-    
-    if (!linksQuery.empty) {
-      const linkData = linksQuery.docs[0].data();
-      const canonicalId = linkData.parentIdNumber || linkData.parentNumber || linkData.parentId;
-      if (String(canonicalId).includes('-')) {
-        return String(canonicalId);
-      }
-    }
-    
-    return String(parentId);
-  } catch (error) {
-    console.error('Error getting parent doc ID:', error);
-    return String(parentId);
-  }
-};
-
-/**
- * Send push notification for an alert
+ * Send push notification for an alert - SIMPLIFIED
  */
 const sendPushForAlert = async (alert, role, userId) => {
   try {
-    // Time-based deduplication - only send if we haven't notified in the last 5 minutes
-    // Use a composite key: alertId + userId to prevent sending same alert to same user multiple times
-    const now = Date.now();
-    const FIVE_MINUTES = 5 * 60 * 1000;
-    const alertId = alert.id || alert.alertId;
-    const deduplicationKey = alertId ? `${alertId}_${userId}` : null;
-    
-    if (deduplicationKey) {
-      const lastNotified = notifiedAlerts.get(deduplicationKey) || 0;
-      const timeSinceLastNotification = now - lastNotified;
-      
-      if (timeSinceLastNotification <= FIVE_MINUTES) {
-        // Skip - we notified this user about this alert recently
-        return;
-      }
-    }
-    
-    // CRITICAL: Validate that this alert is actually intended for this user
-    // Check alert's target fields to ensure we're sending to the right person
-    // This is STRICT validation - alert MUST match the user
-    if (role === 'student') {
-      // For student alerts, verify the alert's studentId matches the userId
-      const alertStudentId = alert.studentId || alert.student_id;
-      // STRICT: If alert has a studentId, it MUST match userId
-      if (alertStudentId) {
-        if (alertStudentId !== userId) {
-          console.log(`⏭️ Skipping push notification - alert studentId (${alertStudentId}) doesn't match userId (${userId})`);
-          return;
-        }
-      } else {
-        // Alert has no studentId - this is suspicious, skip it
-        console.log(`⏭️ Skipping push notification - student alert has no studentId field`);
-        return;
-      }
-    } else if (role === 'parent') {
-      // For parent alerts, verify the alert's parentId matches the userId
-      const alertParentId = alert.parentId || alert.parent_id;
-      // STRICT: If alert has a parentId, it MUST match userId
-      if (alertParentId) {
-        // Normalize parent IDs (both might have or not have dashes)
-        const normalizedAlertParentId = String(alertParentId).trim();
-        const normalizedUserId = String(userId).trim();
-        
-        // Check exact match or if both contain dashes, compare the parts
-        if (normalizedAlertParentId !== normalizedUserId) {
-          // Try matching without dashes or with dashes
-          const alertIdNoDash = normalizedAlertParentId.replace(/-/g, '');
-          const userIdNoDash = normalizedUserId.replace(/-/g, '');
-          if (alertIdNoDash !== userIdNoDash) {
-            console.log(`⏭️ Skipping push notification - alert parentId (${alertParentId}) doesn't match userId (${userId})`);
-            return;
-          }
-        }
-      } else {
-        // Alert has no parentId - this is suspicious, skip it
-        console.log(`⏭️ Skipping push notification - parent alert has no parentId field`);
-        return;
-      }
-      
-    }
-    // For admin alerts, we allow sending to all admins (already filtered by login status)
-    
-    // Get user's FCM token
-    let userDoc = null;
-    try {
-      userDoc = await firestore.collection('users').doc(userId).get();
-      
-      // If not found and role is admin/developer, try alternative document IDs
-      if (!userDoc.exists && (role === 'admin' || role === 'developer')) {
-        const alternativeIds = role === 'admin' ? ['Admin', 'admin'] : ['Developer', 'developer'];
-        for (const altId of alternativeIds) {
-          const altDoc = await firestore.collection('users').doc(altId).get();
-          if (altDoc.exists) {
-            userDoc = altDoc;
-            break;
-          }
-        }
-      }
-      
-      // If still not found, try querying by UID
-      if (!userDoc.exists) {
-        const querySnapshot = await firestore.collection('users')
-          .where('uid', '==', userId)
-          .limit(1)
-          .get();
-        
-        if (!querySnapshot.empty) {
-          userDoc = querySnapshot.docs[0];
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching user document:', err);
+    // Skip if already read
+    if (alert.status === 'read') {
       return;
     }
 
-    if (!userDoc || !userDoc.exists) {
+    const alertId = alert.id || alert.alertId;
+    const deduplicationKey = `${alertId}_${userId}`;
+    const now = Date.now();
+    
+    // Prevent duplicate notifications (5 minute cooldown)
+    const lastNotified = notifiedAlerts.get(deduplicationKey) || 0;
+    if (now - lastNotified < 5 * 60 * 1000) {
+      return; // Already notified recently
+    }
+
+    // STEP 1: Validate alert target matches userId
+    if (role === 'student') {
+      const alertStudentId = alert.studentId || alert.student_id;
+      if (!alertStudentId || alertStudentId !== userId) {
+        return; // Wrong student
+      }
+    } else if (role === 'parent') {
+      const alertParentId = alert.parentId || alert.parent_id;
+      if (!alertParentId) {
+        return; // No parentId in alert
+      }
+      // Normalize IDs for comparison
+      const normalizedAlertParentId = String(alertParentId).replace(/-/g, '').trim();
+      const normalizedUserId = String(userId).replace(/-/g, '').trim();
+      if (normalizedAlertParentId !== normalizedUserId) {
+        return; // Wrong parent
+      }
+    }
+    
+    // STEP 2: Get user document
+    let userDoc = await firestore.collection('users').doc(userId).get();
+    
+    // Try alternative IDs for admin/developer
+    if (!userDoc.exists && (role === 'admin' || role === 'developer')) {
+      const altId = role === 'admin' ? 'Admin' : 'Developer';
+      userDoc = await firestore.collection('users').doc(altId).get();
+    }
+    
+    // Try querying by UID if still not found
+    if (!userDoc.exists) {
+      const querySnapshot = await firestore.collection('users')
+        .where('uid', '==', userId)
+        .limit(1)
+        .get();
+      if (!querySnapshot.empty) {
+        userDoc = querySnapshot.docs[0];
+      }
+    }
+
+    if (!userDoc.exists) {
       return; // User not found
     }
     
     const userData = userDoc.data();
-    const fcmToken = userData?.fcmToken;
-
-    if (!fcmToken) {
-      return; // No FCM token
+    
+    // STEP 3: CRITICAL - User must be logged in
+    // Must have: role, UID, FCM token, and login timestamp
+    if (!userData?.role || !userData?.uid || !userData?.fcmToken) {
+      return; // Not logged in
     }
     
-    // CRITICAL: Only send to users who are actually logged in with a role
-    // Check 1: User must have a role (not on role selection screen)
-    const userRole = userData?.role;
-    if (!userRole || typeof userRole !== 'string' || userRole.trim().length === 0) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has no role (not logged in)`);
-      return; // User hasn't selected a role yet
+    // Must have login timestamp (lastLoginAt or pushTokenUpdatedAt)
+    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
+    if (!lastLoginAt) {
+      return; // Never logged in
     }
     
-    // Check 2: User must have a UID (actually authenticated)
-    const userUid = userData?.uid;
-    if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has no UID (not authenticated)`);
-      return; // User not authenticated
-    }
-    
-    // Check 3: Role must match the expected role for this alert
-    const roleLower = String(userRole).toLowerCase();
-    if (role !== roleLower) {
-      console.log(`⏭️ Skipping push notification - user ${userId} role (${roleLower}) doesn't match alert role (${role})`);
+    // Role must match
+    if (String(userData.role).toLowerCase() !== role) {
       return; // Role mismatch
     }
     
-    // Check 3.5: For parent alerts, verify parent is actually LINKED to the student in the alert
-    // This prevents sending alerts to unlinked parents
+    // STEP 4: For parent alerts, verify link to student
     if (role === 'parent') {
       const alertStudentId = alert.studentId || alert.student_id;
       if (alertStudentId) {
-        try {
-          // Check if parent is linked to this student in parent_student_links
-          // First try with parent UID
-          const linksQuery = await firestore.collection('parent_student_links')
-            .where('parentId', '==', userUid) // Use UID for parent lookup
-            .where('studentId', '==', alertStudentId)
-            .where('status', '==', 'active')
-            .limit(1)
-            .get();
-          
-          if (linksQuery.empty) {
-            // Also try with parentIdNumber (canonical ID) if available
-            const parentIdNumber = userData?.parentId || userData?.parentIdNumber || userId;
-            if (parentIdNumber && parentIdNumber !== userUid) {
-              const linksQuery2 = await firestore.collection('parent_student_links')
-                .where('parentIdNumber', '==', parentIdNumber)
-                .where('studentId', '==', alertStudentId)
-                .where('status', '==', 'active')
-                .limit(1)
-                .get();
-              
-              if (linksQuery2.empty) {
-                console.log(`⏭️ Skipping push notification - parent ${userId} is not linked to student ${alertStudentId}`);
-                return; // Parent is not linked to this student - don't send alert
-              }
-            } else {
-              console.log(`⏭️ Skipping push notification - parent ${userId} is not linked to student ${alertStudentId}`);
-              return; // Parent is not linked to this student - don't send alert
+        // Check parent_student_links
+        const linkQuery = await firestore.collection('parent_student_links')
+          .where('parentId', '==', userData.uid)
+          .where('studentId', '==', alertStudentId)
+          .where('status', '==', 'active')
+          .limit(1)
+          .get();
+        
+        if (linkQuery.empty) {
+          // Try with parentIdNumber
+          const parentIdNumber = userData?.parentId || userData?.parentIdNumber || userId;
+          if (parentIdNumber !== userData.uid) {
+            const linkQuery2 = await firestore.collection('parent_student_links')
+              .where('parentIdNumber', '==', parentIdNumber)
+              .where('studentId', '==', alertStudentId)
+              .where('status', '==', 'active')
+              .limit(1)
+              .get();
+            
+            if (linkQuery2.empty) {
+              return; // Not linked
             }
+          } else {
+            return; // Not linked
           }
-          // Link exists - proceed with notification
-        } catch (linkError) {
-          console.error(`Error verifying parent-student link:`, linkError);
-          // On error, be conservative and skip
-          console.log(`⏭️ Skipping push notification - error verifying link between parent ${userId} and student ${alertStudentId}`);
-          return;
         }
       } else {
-        // Alert has no studentId - can't verify link, skip it
-        console.log(`⏭️ Skipping push notification - parent alert has no studentId field (cannot verify link)`);
-        return;
+        return; // No studentId in alert
       }
     }
     
-    // Check 4: User MUST have logged in (lastLoginAt or pushTokenUpdatedAt required)
-    // This ensures user is actually logged in, not just has a token
-    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-    if (!lastLoginAt) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has no login timestamp (not logged in)`);
-      return; // User hasn't logged in - no timestamp means they're not logged in
-    }
+    // STEP 5: Build notification
+    const title = alert.title || 'New Alert';
+    const body = alert.message || alert.body || 'You have a new alert';
     
-    // Parse lastLoginAt timestamp for real-time filtering
-    let lastLoginTime = null;
-    try {
-      if (lastLoginAt.toMillis) {
-        lastLoginTime = lastLoginAt.toMillis();
-      } else if (lastLoginAt.seconds) {
-        lastLoginTime = lastLoginAt.seconds * 1000;
-      } else if (typeof lastLoginAt === 'string') {
-        const parsedDate = new Date(lastLoginAt);
-        if (!isNaN(parsedDate.getTime())) {
-          lastLoginTime = parsedDate.getTime();
-        }
-      } else if (typeof lastLoginAt === 'number') {
-        lastLoginTime = lastLoginAt;
+    // STEP 6: Send notification
+    await pushService.sendPush(
+      userData.fcmToken,
+      title,
+      body,
+      {
+        type: 'alert',
+        alertId: alertId,
+        alertType: alert.type || alert.alertType,
+        studentId: alert.studentId || '',
+        parentId: alert.parentId || '',
+        status: alert.status || 'unread',
+        ...alert
       }
-    } catch (err) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid login timestamp format`);
-      return; // Invalid timestamp format - skip
-    }
+    );
     
-    if (!lastLoginTime || isNaN(lastLoginTime) || lastLoginTime <= 0) {
-      console.log(`⏭️ Skipping push notification - user ${userId} has invalid login timestamp value`);
-      return; // Invalid timestamp - skip
-    }
+    // Mark as notified
+    notifiedAlerts.set(deduplicationKey, now);
+    console.log(`✅ Push sent: ${role} ${userId} - ${title}`);
     
-    // CRITICAL: Only send alerts created AFTER user logged in (real-time only)
-    // This prevents sending old unread alerts when user logs in
-    const alertCreatedAt = alert.createdAt || alert.timestamp || alert.id;
-    if (alertCreatedAt) {
-      let alertTime;
-      try {
-        // Try to extract timestamp from alert ID (format: timestamp_random)
-        if (typeof alertCreatedAt === 'string' && alertCreatedAt.includes('_')) {
-          const timestampPart = alertCreatedAt.split('_')[0];
-          alertTime = parseInt(timestampPart, 10);
-          if (isNaN(alertTime)) {
-            // Try parsing as date string
-            alertTime = new Date(alertCreatedAt).getTime();
-          }
-        } else if (typeof alertCreatedAt === 'string') {
-          alertTime = new Date(alertCreatedAt).getTime();
-        } else if (typeof alertCreatedAt === 'number') {
-          alertTime = alertCreatedAt;
-        }
-        
-        // If we have both alert time and login time, only send if alert was created AFTER login
-        if (alertTime && !isNaN(alertTime) && lastLoginTime && alertTime < lastLoginTime) {
-          console.log(`⏭️ Skipping push notification - alert ${alertId} was created before user ${userId} logged in (old alert)`);
-          return; // This is an old alert, don't send it
-        }
-      } catch (err) {
-        // If we can't parse alert time, be conservative and skip
-        console.log(`⏭️ Skipping push notification - cannot parse alert creation time for ${alertId}`);
-        return;
-      }
-    }
-
-    // Build notification title and body
-    const alertType = alert.type || alert.alertType;
-    let title = alert.title || 'New Alert';
-    let body = alert.message || alert.body || 'You have a new alert';
-    
-    // Role-specific formatting
-    const parentName = alert.parentName ? String(alert.parentName).trim().split(' ')[0] : 'Parent';
-    const studentName = alert.studentName ? String(alert.studentName).trim().split(' ')[0] : 'Student';
-    
-    if (role === 'student') {
-      if (alertType === 'schedule_current') {
-        title = 'Class Happening Now';
-        body = alert.message || `Your ${alert.subject || 'class'} is happening now (${alert.time || ''}).`;
-      } else if (alertType === 'link_request') {
-        title = 'Parent Link Request';
-        body = alert.message || `${parentName} wants to link to your account.`;
-      } else if (alertType === 'attendance_scan') {
-        title = 'Attendance Recorded';
-        body = alert.message || 'Your attendance has been recorded.';
-      }
-    } else if (role === 'parent') {
-      if (alertType === 'link_request') {
-        title = 'Student Link Request';
-        body = alert.message || `${studentName} wants to link to your account.`;
-      } else if (alertType === 'attendance_scan') {
-        title = 'Attendance Update';
-        body = alert.message || `${studentName}'s attendance has been recorded.`;
-      } else if (alertType === 'schedule_current') {
-        title = 'Class Happening Now';
-        body = alert.message || `${studentName}'s ${alert.subject || 'class'} is happening now (${alert.time || ''}).`;
-      }
-    } else if (role === 'admin') {
-      if (alertType === 'qr_request') {
-        title = 'QR Code Generation Request';
-        body = alert.message || `${studentName || 'A student'} is requesting QR code generation.`;
-      }
-    }
-    
-    // Send push notification
-    try {
-      await pushService.sendPush(
-        fcmToken,
-        title,
-        body,
-        {
-          type: 'alert',
-          alertId: alert.id || alert.alertId,
-          alertType: alertType,
-          studentId: alert.studentId || '',
-          parentId: alert.parentId || '',
-          status: alert.status || 'unread',
-          ...alert
-        }
-      );
-      
-      // Mark as notified (using composite key: alertId + userId)
-      if (deduplicationKey) {
-        notifiedAlerts.set(deduplicationKey, now);
-      }
-      
-      console.log(`✅ Auto-sent push notification for ${role} alert: ${alertId}`);
-    } catch (pushError) {
-      console.error('❌ Failed to auto-send push notification:', pushError);
-      
-      // If token is invalid, remove it
-      if (pushError.code === 'messaging/registration-token-not-registered' || 
-          pushError.code === 'messaging/invalid-registration-token') {
-        await firestore.collection('users').doc(userDoc.id).update({
-          fcmToken: admin.firestore.FieldValue.delete(),
-        });
-      }
-    }
   } catch (error) {
-    console.error('Error in sendPushForAlert:', error);
+    console.error(`❌ Push failed for ${role} ${userId}:`, error.message);
+    // Don't throw - just log and continue
   }
 };
 
 /**
  * Initialize listener for student alerts
  */
-const initializeStudentAlertsListener = (studentId) => {
-  if (!studentId) return;
-  
-  // Unsubscribe from previous listener if exists
-  if (alertListeners.student) {
-    alertListeners.student();
-    alertListeners.student = null;
+const initializeStudentAlertsListener = () => {
+  if (alertListeners.studentCollection) {
+    alertListeners.studentCollection();
   }
   
-  const studentAlertsRef = firestore.collection('student_alerts').doc(studentId);
+  let previousStudentAlerts = new Map(); // studentId -> Set of alert IDs
+  let isInitialSnapshot = true;
   
-  const unsubscribe = studentAlertsRef.onSnapshot(async (snap) => {
-    try {
-      if (!snap.exists) return;
-      
-      const data = snap.data() || {};
-      const items = Array.isArray(data.items) ? data.items : [];
-      
-      // Find new unread alerts
-      const unreadAlerts = items.filter(item => item.status === 'unread');
-      
-      for (const alert of unreadAlerts) {
-        await sendPushForAlert(alert, 'student', studentId);
-      }
-    } catch (error) {
-      console.error('Error in student alerts listener:', error);
+  const studentAlertsCollection = firestore.collection('student_alerts');
+  
+  alertListeners.studentCollection = studentAlertsCollection.onSnapshot(async (snapshot) => {
+    // Ignore initial snapshot
+    if (isInitialSnapshot) {
+      snapshot.docs.forEach(doc => {
+        const studentId = doc.id;
+        const items = Array.isArray(doc.data()?.items) ? doc.data().items : [];
+        const alertIds = new Set(items.map(item => item.id || item.alertId).filter(Boolean));
+        previousStudentAlerts.set(studentId, alertIds);
+      });
+      isInitialSnapshot = false;
+      return;
     }
+    
+    // Process changes
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added' || change.type === 'modified') {
+        const studentId = change.doc.id;
+        const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
+        const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
+        const currentAlertIds = new Set();
+        
+        // Find new unread alerts
+        const newAlerts = items.filter(item => {
+          const alertId = item.id || item.alertId;
+          if (item.status === 'unread' && alertId && !previousAlertIds.has(alertId)) {
+            currentAlertIds.add(alertId);
+            return true;
+          }
+          return false;
+        });
+        
+        previousStudentAlerts.set(studentId, currentAlertIds);
+        
+        // Send notifications for new alerts
+        for (const alert of newAlerts) {
+          await sendPushForAlert(alert, 'student', studentId);
+        }
+      }
+    });
   }, (error) => {
     console.error('Student alerts listener error:', error);
   });
   
-  alertListeners.student = unsubscribe;
-  console.log(`✅ Initialized student alerts listener for: ${studentId}`);
+  console.log('✅ Student alerts listener initialized');
 };
 
 /**
  * Initialize listener for parent alerts
  */
-const initializeParentAlertsListener = async (parentId) => {
-  if (!parentId) return;
-  
-  // Unsubscribe from previous listener if exists
-  if (alertListeners.parent) {
-    alertListeners.parent();
-    alertListeners.parent = null;
+const initializeParentAlertsListener = () => {
+  if (alertListeners.parentCollection) {
+    alertListeners.parentCollection();
   }
   
-  const parentDocId = await getParentDocId(parentId);
-  const parentAlertsRef = firestore.collection('parent_alerts').doc(parentDocId);
+  let previousParentAlerts = new Map(); // parentId -> Set of alert IDs
+  let isInitialParentSnapshot = true;
   
-  const unsubscribe = parentAlertsRef.onSnapshot(async (snap) => {
-    try {
-      if (!snap.exists) return;
-      
-      const data = snap.data() || {};
-      const items = Array.isArray(data.items) ? data.items : [];
-      
-      // Find new unread alerts
-      const unreadAlerts = items.filter(item => item.status === 'unread');
-      
-      for (const alert of unreadAlerts) {
-        await sendPushForAlert(alert, 'parent', parentDocId);
-      }
-    } catch (error) {
-      console.error('Error in parent alerts listener:', error);
+  const parentAlertsCollection = firestore.collection('parent_alerts');
+  
+  alertListeners.parentCollection = parentAlertsCollection.onSnapshot(async (snapshot) => {
+    // Ignore initial snapshot
+    if (isInitialParentSnapshot) {
+      snapshot.docs.forEach(doc => {
+        const parentId = doc.id;
+        const items = Array.isArray(doc.data()?.items) ? doc.data().items : [];
+        const alertIds = new Set(items.map(item => item.id || item.alertId).filter(Boolean));
+        previousParentAlerts.set(parentId, alertIds);
+      });
+      isInitialParentSnapshot = false;
+      return;
     }
+    
+    // Process changes
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added' || change.type === 'modified') {
+        const parentId = change.doc.id;
+        const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
+        const previousAlertIds = previousParentAlerts.get(parentId) || new Set();
+        const currentAlertIds = new Set();
+        
+        // Find new unread alerts
+        const newAlerts = items.filter(item => {
+          const alertId = item.id || item.alertId;
+          if (item.status === 'unread' && alertId && !previousAlertIds.has(alertId)) {
+            currentAlertIds.add(alertId);
+            return true;
+          }
+          return false;
+        });
+        
+        previousParentAlerts.set(parentId, currentAlertIds);
+        
+        // Send notifications for new alerts
+        for (const alert of newAlerts) {
+          await sendPushForAlert(alert, 'parent', parentId);
+        }
+      }
+    });
   }, (error) => {
     console.error('Parent alerts listener error:', error);
   });
   
-  alertListeners.parent = unsubscribe;
-  console.log(`✅ Initialized parent alerts listener for: ${parentDocId}`);
+  console.log('✅ Parent alerts listener initialized');
 };
 
 /**
  * Initialize listener for admin alerts
  */
 const initializeAdminAlertsListener = () => {
-  // Unsubscribe from previous listener if exists
   if (alertListeners.admin) {
     alertListeners.admin();
-    alertListeners.admin = null;
   }
   
-  const adminAlertsRef = firestore.collection('admin_alerts').doc('inbox');
-  let previousAdminAlertIds = new Set(); // Track previous alert IDs
+  let previousAdminAlertIds = new Set();
+  let isInitialAdminSnapshot = true;
   
-  const unsubscribe = adminAlertsRef.onSnapshot(async (snap) => {
-    try {
-      if (!snap.exists) return;
-      
-      const data = snap.data() || {};
-      const items = Array.isArray(data.items) ? data.items : [];
-      
-      const currentAlertIds = new Set();
-      
-      // Find NEW unread alerts (not in previous state)
-      const unreadAlerts = items.filter(item => {
+  const adminAlertsRef = firestore.collection('admin_alerts').doc('inbox');
+  
+  alertListeners.admin = adminAlertsRef.onSnapshot(async (snap) => {
+    if (!snap.exists) return;
+    
+    // Ignore initial snapshot
+    if (isInitialAdminSnapshot) {
+      const items = Array.isArray(snap.data()?.items) ? snap.data().items : [];
+      items.forEach(item => {
         const alertId = item.id || item.alertId;
-        if (item.status === 'unread' && alertId) {
-          currentAlertIds.add(alertId);
-          // Only send if this is a NEW alert (not in previous state)
-          return !previousAdminAlertIds.has(alertId);
+        if (alertId) previousAdminAlertIds.add(alertId);
+      });
+      isInitialAdminSnapshot = false;
+      return;
+    }
+    
+    const items = Array.isArray(snap.data()?.items) ? snap.data().items : [];
+    const currentAlertIds = new Set();
+    
+    // Find new unread alerts
+    const newAlerts = items.filter(item => {
+      const alertId = item.id || item.alertId;
+      if (item.status === 'unread' && alertId && !previousAdminAlertIds.has(alertId)) {
+        currentAlertIds.add(alertId);
+        return true;
+      }
+      return false;
+    });
+    
+    previousAdminAlertIds = currentAlertIds;
+    
+    // Get all logged-in admin users
+    if (newAlerts.length > 0) {
+      const adminUsersSnapshot = await firestore.collection('users')
+        .where('role', '==', 'admin')
+        .get();
+      
+      const adminUserIds = [];
+      adminUsersSnapshot.forEach(doc => {
+        const userData = doc.data();
+        // Must be logged in: has role, UID, FCM token, and login timestamp
+        if (userData?.role === 'admin' && 
+            userData?.uid && 
+            userData?.fcmToken && 
+            (userData?.lastLoginAt || userData?.pushTokenUpdatedAt)) {
+          adminUserIds.push(doc.id === 'Admin' ? 'Admin' : (userData.uid || doc.id));
         }
-        return false;
       });
       
-      // Update previous state
-      previousAdminAlertIds = currentAlertIds;
-      
-      // Send push notifications only for NEW alerts
-      // For admin alerts, send to ALL logged-in admin users only
-      if (unreadAlerts.length > 0) {
-        // Get all admin users
-        const adminUsersSnapshot = await firestore.collection('users')
-          .where('role', '==', 'admin')
-          .get();
-        
-        const adminUserIds = [];
-        const now = Date.now();
-        const ONE_HOUR = 60 * 60 * 1000; // Very strict: only 1 hour
-        
-        adminUsersSnapshot.forEach(doc => {
-          const userData = doc.data();
-          
-          // Check 1: Must have FCM token
-          if (!userData?.fcmToken) {
-            return; // Skip admins without token
-          }
-          
-          // Check 2: Must have a role (actually logged in)
-          const userRole = userData?.role;
-          if (!userRole || typeof userRole !== 'string' || userRole.toLowerCase() !== 'admin') {
-            return; // Skip if no role or not admin
-          }
-          
-          // Check 3: Must have UID (authenticated)
-          const userUid = userData?.uid;
-          if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
-            return; // Skip if not authenticated
-          }
-          
-          // Check 4: User must have FCM token and be logged in (has role and UID)
-          // No time window check - if they have a token, they can receive notifications
-          // Real-time filtering is handled by alert creation time check
-          const userId = doc.id === 'Admin' ? 'Admin' : (userData?.uid || doc.id);
-          adminUserIds.push(userId);
-        });
-        
-        // If no logged-in admin users found, try the 'Admin' document (but still check if logged in)
-        if (adminUserIds.length === 0) {
-          const adminDoc = await firestore.collection('users').doc('Admin').get();
-          if (adminDoc.exists) {
-            const adminData = adminDoc.data();
-            
-            // Check 1: Must have FCM token
-            if (!adminData?.fcmToken) {
-              // Skip
-            } else {
-              // Check 2: Must have a role
-              const userRole = adminData?.role;
-              if (!userRole || typeof userRole !== 'string' || userRole.toLowerCase() !== 'admin') {
-                // Skip
-              } else {
-                // Check 3: Must have UID
-                const userUid = adminData?.uid;
-                if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
-                  // Skip
-                } else {
-                  // Check 4: User must have FCM token and be logged in (has role and UID)
-                  // No time window check - if they have a token, they can receive notifications
-                  // Real-time filtering is handled by alert creation time check
-                  if (adminData?.fcmToken && adminData?.role && adminData?.uid) {
-                    adminUserIds.push('Admin');
-                  }
-                }
-              }
-            }
-          }
-        }
-        
-        // Send notification to each logged-in admin user for each new alert
-        for (const alert of unreadAlerts) {
-          for (const adminUserId of adminUserIds) {
-            await sendPushForAlert(alert, 'admin', adminUserId);
+      // Also check 'Admin' document
+      const adminDoc = await firestore.collection('users').doc('Admin').get();
+      if (adminDoc.exists) {
+        const adminData = adminDoc.data();
+        if (adminData?.role === 'admin' && 
+            adminData?.uid && 
+            adminData?.fcmToken && 
+            (adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt)) {
+          if (!adminUserIds.includes('Admin')) {
+            adminUserIds.push('Admin');
           }
         }
       }
-    } catch (error) {
-      console.error('Error in admin alerts listener:', error);
+      
+      // Send to all logged-in admins
+      for (const alert of newAlerts) {
+        for (const adminUserId of adminUserIds) {
+          await sendPushForAlert(alert, 'admin', adminUserId);
+        }
+      }
     }
   }, (error) => {
     console.error('Admin alerts listener error:', error);
   });
   
-  alertListeners.admin = unsubscribe;
-  console.log('✅ Initialized admin alerts listener');
+  console.log('✅ Admin alerts listener initialized');
 };
 
 /**
  * Initialize all alert listeners
- * This should be called when the server starts
  */
 const initializeAllAlertListeners = async () => {
   try {
-    // Initialize admin alerts listener (always active)
     initializeAdminAlertsListener();
-    
-    // For student and parent alerts, we need to listen to all documents
-    // We'll use collection group queries or listen to all documents
-    
-    // Listen to all student_alerts documents
-    // Track previous state to only send notifications for NEW alerts
-    const studentAlertsCollection = firestore.collection('student_alerts');
-    let previousStudentAlerts = new Map(); // studentId -> Set of alert IDs
-    
-    // Track when listener started to ignore initial snapshot
-    const listenerStartTime = Date.now();
-    let isInitialSnapshot = true;
-    
-    studentAlertsCollection.onSnapshot(async (snapshot) => {
-      // CRITICAL: Ignore initial snapshot - only process changes after listener starts
-      // This prevents sending old unread alerts when server starts
-      if (isInitialSnapshot) {
-        // Initialize previous state with all current alerts (so we only process NEW ones)
-        snapshot.docs.forEach(doc => {
-          const studentId = doc.id;
-          const data = doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          const currentAlertIds = new Set();
-          items.forEach(item => {
-            const alertId = item.id || item.alertId;
-            if (alertId) {
-              currentAlertIds.add(alertId);
-            }
-          });
-          previousStudentAlerts.set(studentId, currentAlertIds);
-        });
-        isInitialSnapshot = false;
-        console.log('✅ Student alerts listener initialized - ignoring initial snapshot');
-        return; // Don't process initial snapshot
-      }
-      
-      // Only process actual changes (new alerts added/modified)
-      const changes = snapshot.docChanges();
-      for (const change of changes) {
-        // Only process 'added' changes (new alerts), not 'modified' (to avoid duplicates)
-        if (change.type === 'added') {
-          const studentId = change.doc.id;
-          const data = change.doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          
-          // Get previous alert IDs for this student
-          const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
-          const currentAlertIds = new Set();
-          
-          // Find NEW unread alerts (not in previous state)
-          const unreadAlerts = items.filter(item => {
-            const alertId = item.id || item.alertId;
-            if (item.status === 'unread' && alertId) {
-              currentAlertIds.add(alertId);
-              // Only send if this is a NEW alert (not in previous state)
-              return !previousAlertIds.has(alertId);
-            }
-            return false;
-          });
-          
-          // Update previous state
-          previousStudentAlerts.set(studentId, currentAlertIds);
-          
-          // Send push notifications only for NEW alerts to THIS specific student
-          for (const alert of unreadAlerts) {
-            await sendPushForAlert(alert, 'student', studentId);
-          }
-        } else if (change.type === 'modified') {
-          // For modified documents, check if new alerts were added
-          const studentId = change.doc.id;
-          const data = change.doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          
-          const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
-          const currentAlertIds = new Set();
-          
-          // Find NEW unread alerts (not in previous state)
-          const unreadAlerts = items.filter(item => {
-            const alertId = item.id || item.alertId;
-            if (item.status === 'unread' && alertId) {
-              currentAlertIds.add(alertId);
-              // Only send if this is a NEW alert (not in previous state)
-              return !previousAlertIds.has(alertId);
-            }
-            return false;
-          });
-          
-          // Update previous state
-          previousStudentAlerts.set(studentId, currentAlertIds);
-          
-          // Send push notifications only for NEW alerts
-          for (const alert of unreadAlerts) {
-            await sendPushForAlert(alert, 'student', studentId);
-          }
-        }
-      }
-    }, (error) => {
-      console.error('Student alerts collection listener error:', error);
-    });
-    
-    // Listen to all parent_alerts documents
-    // Track previous state to only send notifications for NEW alerts
-    const parentAlertsCollection = firestore.collection('parent_alerts');
-    let previousParentAlerts = new Map(); // parentDocId -> Set of alert IDs
-    let isInitialParentSnapshot = true;
-    
-    parentAlertsCollection.onSnapshot(async (snapshot) => {
-      // CRITICAL: Ignore initial snapshot - only process changes after listener starts
-      if (isInitialParentSnapshot) {
-        snapshot.docs.forEach(doc => {
-          const parentDocId = doc.id;
-          const data = doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          const currentAlertIds = new Set();
-          items.forEach(item => {
-            const alertId = item.id || item.alertId;
-            if (alertId) {
-              currentAlertIds.add(alertId);
-            }
-          });
-          previousParentAlerts.set(parentDocId, currentAlertIds);
-        });
-        isInitialParentSnapshot = false;
-        console.log('✅ Parent alerts listener initialized - ignoring initial snapshot');
-        return; // Don't process initial snapshot
-      }
-      
-      // Only process actual changes (new alerts added/modified)
-      const changes = snapshot.docChanges();
-      for (const change of changes) {
-        if (change.type === 'added') {
-          const parentDocId = change.doc.id;
-          const data = change.doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          
-          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
-          const currentAlertIds = new Set();
-          
-          const unreadAlerts = items.filter(item => {
-            const alertId = item.id || item.alertId;
-            if (item.status === 'unread' && alertId) {
-              currentAlertIds.add(alertId);
-              return !previousAlertIds.has(alertId);
-            }
-            return false;
-          });
-          
-          previousParentAlerts.set(parentDocId, currentAlertIds);
-          
-          for (const alert of unreadAlerts) {
-            await sendPushForAlert(alert, 'parent', parentDocId);
-          }
-        } else if (change.type === 'modified') {
-          const parentDocId = change.doc.id;
-          const data = change.doc.data() || {};
-          const items = Array.isArray(data.items) ? data.items : [];
-          
-          const previousAlertIds = previousParentAlerts.get(parentDocId) || new Set();
-          const currentAlertIds = new Set();
-          
-          const unreadAlerts = items.filter(item => {
-            const alertId = item.id || item.alertId;
-            if (item.status === 'unread' && alertId) {
-              currentAlertIds.add(alertId);
-              return !previousAlertIds.has(alertId);
-            }
-            return false;
-          });
-          
-          previousParentAlerts.set(parentDocId, currentAlertIds);
-          
-          for (const alert of unreadAlerts) {
-            await sendPushForAlert(alert, 'parent', parentDocId);
-          }
-        }
-      }
-    }, (error) => {
-      console.error('Parent alerts collection listener error:', error);
-    });
-    
+    initializeStudentAlertsListener();
+    initializeParentAlertsListener();
     console.log('✅ All alert listeners initialized');
   } catch (error) {
     console.error('Error initializing alert listeners:', error);
@@ -772,30 +382,29 @@ const initializeAllAlertListeners = async () => {
 };
 
 /**
- * Clean up old notification timestamps (prevent memory leak)
+ * Clean up old notification timestamps
  */
 setInterval(() => {
   const now = Date.now();
   const ONE_HOUR = 60 * 60 * 1000;
-  
-  for (const [alertId, timestamp] of notifiedAlerts.entries()) {
+  for (const [key, timestamp] of notifiedAlerts.entries()) {
     if (now - timestamp > ONE_HOUR) {
-      notifiedAlerts.delete(alertId);
+      notifiedAlerts.delete(key);
     }
   }
-}, 10 * 60 * 1000); // Run every 10 minutes
+}, 10 * 60 * 1000); // Every 10 minutes
 
 /**
  * Cleanup all listeners
  */
 const cleanupAlertListeners = () => {
-  if (alertListeners.student) {
-    alertListeners.student();
-    alertListeners.student = null;
+  if (alertListeners.studentCollection) {
+    alertListeners.studentCollection();
+    alertListeners.studentCollection = null;
   }
-  if (alertListeners.parent) {
-    alertListeners.parent();
-    alertListeners.parent = null;
+  if (alertListeners.parentCollection) {
+    alertListeners.parentCollection();
+    alertListeners.parentCollection = null;
   }
   if (alertListeners.admin) {
     alertListeners.admin();
@@ -806,9 +415,6 @@ const cleanupAlertListeners = () => {
 
 module.exports = {
   initializeAllAlertListeners,
-  initializeStudentAlertsListener,
-  initializeParentAlertsListener,
-  initializeAdminAlertsListener,
   cleanupAlertListeners,
+  sendPushForAlert
 };
-

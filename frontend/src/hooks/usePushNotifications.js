@@ -187,29 +187,28 @@ export default function usePushNotifications() {
 
           const userRef = doc(db, 'users', targetDocId);
           
-          // Save FCM token only (no Expo fallback)
-          // IMPORTANT: Save role and UID together with token to ensure user is logged in
+          // CRITICAL: Only save FCM token if user is FULLY logged in
+          // Must have: role AND uid (not on role selection screen)
+          if (!user?.role || !user?.uid) {
+            console.log('⚠️ Skipping FCM token save - user not fully logged in');
+            return null;
+          }
+          
+          // Save FCM token with login timestamp
           const now = new Date().toISOString();
           const tokenData = {
             fcmToken: fcmToken,
             pushTokenType: 'fcm',
             pushTokenUpdatedAt: now,
-            // CRITICAL: Track when user logged in - only send alerts created AFTER this time
-            lastLoginAt: now, // Track login time to ignore old alerts
-            // CRITICAL: Always save role and UID with token to verify user is logged in
+            lastLoginAt: now, // Track when user logged in
             role: user.role,
             uid: user.uid,
             parentId: canonicalParentId || user.parentId || null,
             studentId: studentId || user.studentId || null,
           };
           
-          console.log('✅ Saving FCM token to Firestore for logged-in user:', {
-            role: user.role,
-            uid: user.uid,
-            targetDocId: targetDocId
-          });
-          
           await setDoc(userRef, tokenData, { merge: true });
+          console.log('✅ FCM token saved for logged-in user:', { role: user.role, uid: user.uid });
 
           console.log('✅ FCM token saved to Firestore:', {
             savedUnder: targetDocId,
