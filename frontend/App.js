@@ -102,20 +102,25 @@ function AppContent() {
           unsubscribeForeground = messagingInstance.onMessage(async remoteMessage => {
             try {
               console.log('🔔 FCM Foreground Message received:', remoteMessage);
+              console.log('   Notification:', remoteMessage?.notification);
+              console.log('   Data:', remoteMessage?.data);
               
               // Display notification using expo-notifications when app is in foreground
+              // When app is closed, FCM automatically displays the notification
+              // This handler is only for when app is in foreground
               await Notifications.scheduleNotificationAsync({
                 content: {
-                  title: remoteMessage?.notification?.title || 'New Alert',
+                  title: remoteMessage?.notification?.title || remoteMessage?.data?.title || 'New Alert',
                   body: remoteMessage?.notification?.body || remoteMessage?.data?.body || '',
                   data: remoteMessage?.data || {},
                   sound: true,
-                  priority: Notifications.AndroidNotificationPriority.HIGH,
+                  priority: Notifications.AndroidNotificationPriority.MAX, // Highest priority
                 },
                 trigger: null, // Show immediately
               });
+              console.log('✅ Foreground notification displayed');
             } catch (notifError) {
-              console.error('Error displaying FCM foreground notification:', notifError);
+              console.error('❌ Error displaying FCM foreground notification:', notifError);
             }
           });
           console.log('✅ FCM Foreground message handler registered');

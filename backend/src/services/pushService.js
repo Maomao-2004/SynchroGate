@@ -17,12 +17,18 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
     }
 
     // Build FCM message
+    // CRITICAL: When app is closed, FCM automatically displays notifications
+    // if both 'notification' and 'data' fields are present
     const message = {
       token: fcmToken,
+      // Notification payload - automatically displayed by FCM when app is closed
       notification: {
         title: title || 'Notification',
         body: body || '',
+        // Add image if available in data
+        imageUrl: data.imageUrl || undefined,
       },
+      // Data payload - available to app when notification is tapped
       data: {
         ...data,
         // Convert all data values to strings (FCM requirement)
@@ -30,29 +36,57 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
           acc[key] = String(data[key]);
           return acc;
         }, {}),
+        // Ensure title and body are in data for app to use when opened
+        title: String(title || 'Notification'),
+        body: String(body || ''),
       },
       android: {
+        // CRITICAL: 'high' priority ensures notification is delivered even when app is closed
         priority: 'high',
         notification: {
           channelId: 'default', // Must match the channel created in the app
           sound: 'default',
-          priority: 'high',
+          priority: 'high', // High priority for heads-up notification
           defaultSound: true,
           defaultVibrateTimings: true,
           visibility: 'public', // Show notification even when device is locked
           notificationCount: 1, // Badge count
-          clickAction: 'FLUTTER_NOTIFICATION_CLICK', // Action when notification is tapped
+          // Don't set clickAction - let FCM handle it automatically
+          // clickAction: 'FLUTTER_NOTIFICATION_CLICK', // This might interfere
+          // Ensure notification shows even when screen is off
+          lightSettings: {
+            color: {
+              red: 0.0,
+              green: 0.0,
+              blue: 1.0,
+              alpha: 1.0,
+            },
+            lightOnDuration: '1s',
+            lightOffDuration: '1s',
+          },
         },
         // Critical: These settings ensure notifications work when app is closed
         ttl: 86400000, // 24 hours - how long notification is valid
         collapseKey: 'alert', // Collapse multiple notifications with same key
+        // Direct boot mode - deliver notification even after reboot
+        directBootOk: true,
       },
       apns: {
         payload: {
           aps: {
             sound: 'default',
             badge: 1,
+            // Ensure notification is delivered even when app is closed
+            contentAvailable: true,
           },
+        },
+      },
+      // Web push configuration (if needed)
+      webpush: {
+        notification: {
+          title: title || 'Notification',
+          body: body || '',
+          icon: '/icon.png',
         },
       },
     };
