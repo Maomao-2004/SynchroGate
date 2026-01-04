@@ -110,18 +110,46 @@ const sendPushForAlert = async (alert, role, userId) => {
     // STEP 3: CRITICAL - User must be logged in
     // Must have: role, UID, FCM token, and login timestamp (proves they logged in)
     if (!userData?.role || !userData?.uid || !userData?.fcmToken) {
+      console.log(`⏭️ Skipping push - user ${userId} not logged in (missing role/uid/token)`);
       return; // Not logged in - missing required fields
     }
     
     // Must have login timestamp (proves user has logged in at least once)
     const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
     if (!lastLoginAt) {
+      console.log(`⏭️ Skipping push - user ${userId} never logged in (no timestamp)`);
       return; // Never logged in - no timestamp means they never logged in
     }
     
     // Role must match the alert's target role
     if (String(userData.role).toLowerCase() !== role) {
+      console.log(`⏭️ Skipping push - user ${userId} role (${userData.role}) doesn't match alert role (${role})`);
       return; // Role mismatch - wrong user type
+    }
+    
+    // CRITICAL: Verify document ID (userId) matches user's actual ID
+    // For students: userId must match userData.studentId
+    // For parents: userId must match userData.parentId (canonical)
+    if (role === 'student') {
+      const userStudentId = userData.studentId;
+      if (userStudentId) {
+        const normalizedUserStudentId = String(userStudentId).replace(/-/g, '').trim();
+        const normalizedUserId = String(userId).replace(/-/g, '').trim();
+        if (normalizedUserStudentId !== normalizedUserId && userStudentId !== userId) {
+          console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's studentId (${userStudentId})`);
+          return; // Document ID doesn't match user's studentId
+        }
+      }
+    } else if (role === 'parent') {
+      const userParentId = userData.parentId || userData.parentIdNumber;
+      if (userParentId) {
+        const normalizedUserParentId = String(userParentId).replace(/-/g, '').trim();
+        const normalizedUserId = String(userId).replace(/-/g, '').trim();
+        if (normalizedUserParentId !== normalizedUserId && userParentId !== userId) {
+          console.log(`⏭️ Skipping push - document ID (${userId}) doesn't match user's parentId (${userParentId})`);
+          return; // Document ID doesn't match user's parentId
+        }
+      }
     }
     
     // STEP 4: For parent alerts, verify link to student
@@ -277,7 +305,7 @@ const initializeParentAlertsListener = () => {
     // Process changes
     snapshot.docChanges().forEach(async (change) => {
       if (change.type === 'added' || change.type === 'modified') {
-        const parentId = change.doc.id;
+        const parentId = change.doc.id; // Document ID is the parentId (canonical)
         const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
         const previousAlertIds = previousParentAlerts.get(parentId) || new Set();
         const currentAlertIds = new Set();
@@ -294,8 +322,13 @@ const initializeParentAlertsListener = () => {
         
         previousParentAlerts.set(parentId, currentAlertIds);
         
-        // Send notifications for new alerts
+        // CRITICAL: Only send to the specific parent whose document this is
+        // The document ID (parentId) must match a logged-in user's parentId
         for (const alert of newAlerts) {
+          // Ensure alert has parentId that matches document ID
+          if (!alert.parentId) {
+            alert.parentId = parentId; // Set it if missing
+          }
           await sendPushForAlert(alert, 'parent', parentId);
         }
       }
