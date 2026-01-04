@@ -51,8 +51,22 @@ const getParentDocId = async (user) => {
 };
 
 // Initialize global push notification listener for all roles
+// NOTE: This is now DISABLED - backend handles all push notifications automatically
+// We keep this for potential future use but it should not send notifications
 export const initializeGlobalPushNotifications = async (user) => {
+  // DISABLED: Backend now handles all push notifications automatically
+  // Frontend listeners are no longer needed and could cause duplicate notifications
+  console.log('ℹ️ Frontend push notification listener disabled - backend handles all notifications');
+  return;
+  
+  // OLD CODE BELOW - DISABLED
   if (!user?.uid) return;
+  
+  // CRITICAL: Only initialize if user has a role (fully logged in)
+  if (!user?.role || typeof user.role !== 'string' || user.role.trim().length === 0) {
+    console.log('⏭️ Not initializing push notifications - user has no role (not logged in)');
+    return;
+  }
   
   currentUser = user;
   

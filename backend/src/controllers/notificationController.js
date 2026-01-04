@@ -243,13 +243,105 @@ const sendAlertPushNotification = async (req, res, next) => {
     // Get data from document (handle both DocumentSnapshot and QueryDocumentSnapshot)
     userData = userDoc.data ? userDoc.data() : (userDoc.exists ? userDoc.data() : null);
 
+    // CRITICAL: Validate user is actually logged in before sending notification
+    // Check 1: User must have a role (not on role selection screen)
+    const userRole = userData?.role;
+    if (!userRole || typeof userRole !== 'string' || userRole.trim().length === 0) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has no role (not logged in)`);
+      return res.status(403).json({ 
+        error: "User not logged in",
+        message: "User has not selected a role yet. Please log in first."
+      });
+    }
+    
+    // Check 2: User must have a UID (actually authenticated)
+    const userUid = userData?.uid;
+    if (!userUid || typeof userUid !== 'string' || userUid.trim().length === 0) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has no UID (not authenticated)`);
+      return res.status(403).json({ 
+        error: "User not authenticated",
+        message: "User is not authenticated. Please log in first."
+      });
+    }
+    
+    // Check 3: Role must match the expected role for this alert
+    const roleLower = String(userRole).toLowerCase();
+    if (role && role.toLowerCase() !== roleLower) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} role (${roleLower}) doesn't match alert role (${role})`);
+      return res.status(403).json({ 
+        error: "Role mismatch",
+        message: "User role does not match alert target role."
+      });
+    }
+    
+    // Check 4: FCM token was updated recently (within last 30 minutes - very strict)
+    const pushTokenUpdatedAt = userData?.pushTokenUpdatedAt;
+    if (!pushTokenUpdatedAt) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has no pushTokenUpdatedAt timestamp (not logged in)`);
+      return res.status(403).json({ 
+        error: "User not logged in",
+        message: "User has not logged in recently. Please log in again."
+      });
+    }
+    
+    // Handle different timestamp formats
+    const now = Date.now();
+    let tokenUpdateTime;
+    try {
+      if (pushTokenUpdatedAt.toMillis) {
+        tokenUpdateTime = pushTokenUpdatedAt.toMillis();
+      } else if (pushTokenUpdatedAt.seconds) {
+        tokenUpdateTime = pushTokenUpdatedAt.seconds * 1000;
+      } else if (typeof pushTokenUpdatedAt === 'string') {
+        const parsedDate = new Date(pushTokenUpdatedAt);
+        if (isNaN(parsedDate.getTime())) {
+          throw new Error('Invalid date string');
+        }
+        tokenUpdateTime = parsedDate.getTime();
+      } else if (typeof pushTokenUpdatedAt === 'number') {
+        tokenUpdateTime = pushTokenUpdatedAt;
+      } else {
+        throw new Error('Unknown timestamp format');
+      }
+    } catch (err) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid pushTokenUpdatedAt format: ${err.message}`);
+      return res.status(403).json({ 
+        error: "Invalid token timestamp",
+        message: "User token timestamp is invalid. Please log in again."
+      });
+    }
+    
+    // Check if timestamp is valid
+    if (isNaN(tokenUpdateTime) || tokenUpdateTime <= 0 || tokenUpdateTime > now + 60000) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} has invalid pushTokenUpdatedAt value: ${tokenUpdateTime}`);
+      return res.status(403).json({ 
+        error: "Invalid token timestamp",
+        message: "User token timestamp is invalid. Please log in again."
+      });
+    }
+    
+    const timeSinceTokenUpdate = now - tokenUpdateTime;
+    const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
+    
+    // If token is older than 30 minutes, user is likely not logged in
+    if (timeSinceTokenUpdate > THIRTY_MINUTES) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 30 minutes)`);
+      return res.status(403).json({ 
+        error: "User not logged in",
+        message: "User has not logged in recently. Please log in again."
+      });
+    }
+
     // userData is already set above
     const fcmToken = userData?.fcmToken;
 
     console.log(`🔑 FCM token status:`, {
       hasToken: !!fcmToken,
       tokenLength: fcmToken ? fcmToken.length : 0,
-      tokenPreview: fcmToken ? fcmToken.substring(0, 20) + '...' : 'none'
+      tokenPreview: fcmToken ? fcmToken.substring(0, 20) + '...' : 'none',
+      userRole: userRole,
+      userUid: userUid,
+      tokenAgeMinutes: Math.round(timeSinceTokenUpdate / (60 * 1000))
     });
 
     if (!fcmToken) {

@@ -12,8 +12,14 @@ const { admin } = require('../config/firebase');
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   try {
     // Validate FCM token
-    if (!fcmToken || typeof fcmToken !== 'string') {
+    if (!fcmToken || typeof fcmToken !== 'string' || fcmToken.trim().length === 0) {
       throw new Error('Invalid FCM token provided');
+    }
+    
+    // CRITICAL: Additional validation - ensure token looks valid
+    // FCM tokens are typically 152-163 characters long
+    if (fcmToken.length < 100 || fcmToken.length > 200) {
+      throw new Error('FCM token length is invalid');
     }
 
     // Build FCM message
