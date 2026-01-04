@@ -130,24 +130,39 @@ export const initializeGlobalPushNotifications = async (user) => {
       
       const unsubscribe = onSnapshot(adminAlertsRef, async (snap) => {
         try {
-          if (!snap.exists()) return;
+          console.log('🔔 Admin alerts snapshot received');
+          if (!snap.exists()) {
+            console.log('⚠️ Admin alerts document does not exist');
+            return;
+          }
           
           const data = snap.data() || {};
           const items = Array.isArray(data.items) ? data.items : [];
+          console.log(`📋 Admin alerts: ${items.length} total items`);
           
           // Filter for unread alerts only and check if we've already notified
           const unreadAlerts = items.filter(item => item.status === 'unread');
+          console.log(`📋 Unread admin alerts: ${unreadAlerts.length}`);
           
           // Send push notifications for new unread alerts only
           for (const alert of unreadAlerts) {
             if (!notifiedIds.has(alert.id)) {
+              console.log(`📤 Sending push notification for admin alert:`, {
+                id: alert.id,
+                type: alert.type,
+                title: alert.title,
+                alreadyNotified: notifiedIds.has(alert.id)
+              });
               await sendPushNotificationForAlert(alert, 'admin');
               notifiedIds.add(alert.id); // Mark as notified
+              console.log(`✅ Marked alert ${alert.id} as notified`);
+            } else {
+              console.log(`⏭️ Skipping alert ${alert.id} - already notified`);
             }
           }
           
         } catch (error) {
-          console.error('Error in admin push notification listener:', error);
+          console.error('❌ Error in admin push notification listener:', error);
         }
       });
       
