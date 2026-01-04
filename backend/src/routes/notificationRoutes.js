@@ -46,4 +46,12 @@ router.post(
   notificationController.logNotificationEvent
 );
 
+// Alert push notification endpoint (used by frontend for real-time alerts)
+// This endpoint doesn't require auth middleware because it's called internally
+// from the frontend when alerts are created/updated
+router.post(
+  '/alert-push',
+  notificationController.sendAlertPushNotification
+);
+
 module.exports = router;
