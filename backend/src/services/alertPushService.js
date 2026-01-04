@@ -232,11 +232,11 @@ const sendPushForAlert = async (alert, role, userId) => {
     }
     
     const timeSinceTokenUpdate = now - tokenUpdateTime;
-    const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
+    const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
     
-    // If token is older than 30 minutes, user is likely not logged in
-    if (timeSinceTokenUpdate > THIRTY_MINUTES) {
-      console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 30 minutes)`);
+    // If token is older than 15 minutes, user is likely not logged in
+    if (timeSinceTokenUpdate > FIFTEEN_MINUTES) {
+      console.log(`⏭️ Skipping push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 15 minutes)`);
       return; // User hasn't logged in recently, skip notification
     }
     
@@ -513,10 +513,10 @@ const initializeAdminAlertsListener = () => {
           }
           
           const timeSinceTokenUpdate = now - tokenUpdateTime;
-          const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
+          const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
           
-          // Only include if token was updated within last 30 minutes (user is currently logged in)
-          if (timeSinceTokenUpdate <= THIRTY_MINUTES) {
+          // Only include if token was updated within last 15 minutes (user is currently logged in)
+          if (timeSinceTokenUpdate <= FIFTEEN_MINUTES) {
             const userId = doc.id === 'Admin' ? 'Admin' : (userData?.uid || doc.id);
             adminUserIds.push(userId);
           }
@@ -559,8 +559,8 @@ const initializeAdminAlertsListener = () => {
                     
                     if (tokenUpdateTime && !isNaN(tokenUpdateTime) && tokenUpdateTime > 0) {
                       const timeSinceTokenUpdate = now - tokenUpdateTime;
-                      const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
-                      if (timeSinceTokenUpdate <= THIRTY_MINUTES) {
+                      const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
+                      if (timeSinceTokenUpdate <= FIFTEEN_MINUTES) {
                         adminUserIds.push('Admin');
                       }
                     }

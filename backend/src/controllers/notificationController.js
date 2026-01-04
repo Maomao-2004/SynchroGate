@@ -321,11 +321,11 @@ const sendAlertPushNotification = async (req, res, next) => {
     }
     
     const timeSinceTokenUpdate = now - tokenUpdateTime;
-    const THIRTY_MINUTES = 30 * 60 * 1000; // Very strict: only 30 minutes
+    const FIFTEEN_MINUTES = 15 * 60 * 1000; // EXTREMELY strict: only 15 minutes
     
-    // If token is older than 30 minutes, user is likely not logged in
-    if (timeSinceTokenUpdate > THIRTY_MINUTES) {
-      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 30 minutes)`);
+    // If token is older than 15 minutes, user is likely not logged in
+    if (timeSinceTokenUpdate > FIFTEEN_MINUTES) {
+      console.log(`⏭️ Rejecting push notification - user ${userId} token is too old (${Math.round(timeSinceTokenUpdate / (60 * 1000))} minutes old, max 15 minutes)`);
       return res.status(403).json({ 
         error: "User not logged in",
         message: "User has not logged in recently. Please log in again."
