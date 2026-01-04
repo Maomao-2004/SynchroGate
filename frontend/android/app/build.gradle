@@ -192,13 +192,21 @@ task copyGoogleServicesToApp(type: Copy) {
     onlyIf { !file('google-services.json').exists() }
 }
 
-// Run copy tasks before processing Google Services
-preBuild.dependsOn copyGoogleServices
-preBuild.dependsOn copyGoogleServicesToApp
-
 // CRITICAL: Always apply Google Services plugin for Firebase to work
 // This processes google-services.json and auto-initializes Firebase
 // The google-services.json files are already committed in:
 //   - android/app/src/release/google-services.json
 //   - android/app/src/debug/google-services.json
 apply plugin: 'com.google.gms.google-services'
+
+// Ensure copy tasks run before Google Services processing
+afterEvaluate {
+    tasks.named('processReleaseGoogleServices').configure {
+        dependsOn copyGoogleServices
+        dependsOn copyGoogleServicesToApp
+    }
+    tasks.named('processDebugGoogleServices').configure {
+        dependsOn copyGoogleServices
+        dependsOn copyGoogleServicesToApp
+    }
+}
