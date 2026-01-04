@@ -5,9 +5,10 @@ import { useNavigation, useIsFocused, useFocusEffect, CommonActions } from '@rea
 import { Ionicons } from '@expo/vector-icons';
 import { AuthContext } from '../../contexts/AuthContext';
 import { BASE_URL } from '../../utils/apiConfig';
-import { collection, query, where, getDocs, doc, collectionGroup } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, collectionGroup, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { sendAlertPushNotification } from '../../utils/pushNotificationHelper';
 
 const Developer = () => {
   const navigation = useNavigation();
@@ -49,6 +50,63 @@ const Developer = () => {
     { name: 'Parents', endpoint: '/api/parents', method: 'GET', requiresAuth: true },
     { name: 'Logs', endpoint: '/api/logs', method: 'GET', requiresAuth: true },
   ];
+
+  // Test push notification function
+  const testPushNotification = async () => {
+    try {
+      setLoading(true);
+      console.log('🧪 Testing push notification...');
+      
+      // Get current user's document to find their ID
+      const userDocId = user?.uid || user?.studentId || user?.parentId || 'Admin';
+      const userRole = user?.role || 'admin';
+      
+      // Get FCM token from Firestore
+      let fcmToken = null;
+      try {
+        const userRef = doc(db, 'users', userDocId);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          fcmToken = userSnap.data()?.fcmToken;
+          console.log('🔑 FCM Token found:', fcmToken ? fcmToken.substring(0, 20) + '...' : 'NOT FOUND');
+        }
+      } catch (err) {
+        console.error('Error fetching user doc:', err);
+      }
+
+      const testAlert = {
+        id: `test-${Date.now()}`,
+        type: 'test',
+        alertType: 'test',
+        title: 'Test Push Notification',
+        message: 'This is a test notification. If you see this, push notifications are working!',
+        status: 'unread',
+        studentId: user?.studentId || '',
+        parentId: user?.parentId || '',
+      };
+
+      console.log('📤 Calling sendAlertPushNotification with:', {
+        userId: userDocId,
+        role: userRole,
+        hasFcmToken: !!fcmToken
+      });
+
+      await sendAlertPushNotification(testAlert, userDocId, userRole);
+      
+      setFeedbackMessage(fcmToken 
+        ? '✅ Push notification sent! Check your device (close the app first). Check Railway logs for confirmation.'
+        : '⚠️ No FCM token found. Please log out and log back in to generate a token.');
+      setFeedbackSuccess(!!fcmToken);
+      setFeedbackVisible(true);
+    } catch (error) {
+      console.error('❌ Test push notification failed:', error);
+      setFeedbackMessage(`❌ Error: ${error.message}. Check console for details.`);
+      setFeedbackSuccess(false);
+      setFeedbackVisible(true);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (isFocused) {
@@ -486,6 +544,26 @@ const Developer = () => {
               ));
             })()}
           </View>
+        </View>
+
+        {/* Push Notification Test Section */}
+        <View style={styles.apiTestingSection}>
+          <Text style={styles.mainSectionTitle}>🧪 Push Notification Test</Text>
+          <TouchableOpacity
+            style={[styles.testButton, { backgroundColor: '#004f89' }]}
+            onPress={testPushNotification}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.testButtonText}>Test Push Notification</Text>
+            )}
+          </TouchableOpacity>
+          <Text style={styles.testHint}>
+            Sends a test notification to your device.{'\n'}
+            Close the app first, then tap this button.
+          </Text>
         </View>
 
         {/* API Testing Section */}
