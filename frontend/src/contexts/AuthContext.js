@@ -742,6 +742,43 @@ export const AuthProvider = ({ children }) => {
     try {
       console.log('Starting logout process...');
       
+      // CRITICAL: Clear FCM token from Firestore BEFORE signing out
+      // This prevents backend from sending notifications to logged-out users
+      if (user?.uid && user?.role) {
+        try {
+          const roleLower = String(user.role).toLowerCase();
+          const isParent = roleLower === 'parent';
+          const isStudent = roleLower === 'student';
+          const isDeveloper = roleLower === 'developer';
+          const isAdmin = roleLower === 'admin';
+          
+          // Determine document ID (same logic as pushTokenGenerator)
+          const canonicalParentId = (user?.parentId && String(user.parentId).includes('-')) ? String(user.parentId) : null;
+          const studentId = user?.studentId && String(user.studentId).trim().length > 0 ? String(user.studentId).trim() : null;
+          const targetDocId = isParent && canonicalParentId
+            ? canonicalParentId
+            : (isStudent && studentId) ? studentId 
+            : isDeveloper ? "Developer"
+            : isAdmin ? "Admin"
+            : user.uid;
+          
+          const userRef = doc(db, 'users', targetDocId);
+          
+          // Remove FCM token and clear login timestamp
+          await updateDoc(userRef, {
+            fcmToken: null,
+            pushTokenType: null,
+            pushTokenUpdatedAt: null,
+            lastLoginAt: null, // CRITICAL: Clear login timestamp so backend won't send notifications
+          });
+          
+          console.log('✅ FCM token cleared from Firestore on logout');
+        } catch (fcmError) {
+          console.warn('⚠️ Failed to clear FCM token on logout (non-blocking):', fcmError);
+          // Don't fail logout if FCM token clearing fails
+        }
+      }
+      
       // Sign out from Firebase Auth
       await signOut(auth);
       

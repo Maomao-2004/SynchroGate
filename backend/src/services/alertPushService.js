@@ -18,19 +18,29 @@ const notifiedAlerts = new Map(); // Key: `${alertId}_${userId}`, Value: timesta
 
 /**
  * CRITICAL: Verify user is logged in and active
- * Returns true only if user has ALL required fields and logged in within 30 days
+ * Returns true only if user has ALL required fields and logged in within 24 HOURS
+ * This prevents sending notifications to users who logged out or are inactive
  */
 const isUserLoggedIn = (userData) => {
-  if (!userData) return false;
+  if (!userData) {
+    console.log('⏭️ isUserLoggedIn: userData is null/undefined');
+    return false;
+  }
   
   // Must have role, uid, and fcmToken
   if (!userData.role || !userData.uid || !userData.fcmToken) {
+    console.log('⏭️ isUserLoggedIn: missing required fields', {
+      hasRole: !!userData.role,
+      hasUid: !!userData.uid,
+      hasFcmToken: !!userData.fcmToken
+    });
     return false;
   }
   
   // Must have login timestamp
   const lastLoginAt = userData.lastLoginAt || userData.pushTokenUpdatedAt;
   if (!lastLoginAt) {
+    console.log('⏭️ isUserLoggedIn: no login timestamp');
     return false;
   }
   
@@ -47,18 +57,31 @@ const isUserLoggedIn = (userData) => {
       loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
     }
   } catch (e) {
+    console.log('⏭️ isUserLoggedIn: error parsing timestamp', e.message);
     return false;
   }
   
   if (!loginTimestampMs || isNaN(loginTimestampMs)) {
+    console.log('⏭️ isUserLoggedIn: invalid timestamp');
     return false;
   }
   
-  // Must be logged in within 30 days
-  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  // CRITICAL: Must be logged in within 12 HOURS (not 30 days)
+  // This ensures we only send to actively logged-in users
+  // Users who haven't logged in within 12 hours are considered inactive/logged out
+  const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
   const timeSinceLogin = Date.now() - loginTimestampMs;
   
-  return timeSinceLogin <= THIRTY_DAYS_MS;
+  if (timeSinceLogin > TWELVE_HOURS_MS) {
+    const hoursSinceLogin = Math.floor(timeSinceLogin / (60 * 60 * 1000));
+    console.log(`⏭️ isUserLoggedIn: REJECTED - user logged in ${hoursSinceLogin} hours ago (more than 12 hours - INACTIVE/LOGGED OUT)`);
+    return false;
+  }
+  
+  const hoursSinceLogin = Math.floor(timeSinceLogin / (60 * 60 * 1000));
+  const minutesSinceLogin = Math.floor((timeSinceLogin % (60 * 60 * 1000)) / (60 * 1000));
+  console.log(`✅ isUserLoggedIn: APPROVED - user is actively logged in (logged in ${hoursSinceLogin}h ${minutesSinceLogin}m ago)`);
+  return true;
 };
 
 /**
