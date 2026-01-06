@@ -114,13 +114,44 @@ const sendPushForAlert = async (alert, role, userId) => {
       return;
     }
     
+    // CRITICAL: Check if login timestamp is recent (within last 30 days)
+    // This ensures we only send to users who are actively using the app
+    let loginTimestampMs = null;
+    try {
+      if (typeof lastLoginAt === 'string') {
+        loginTimestampMs = new Date(lastLoginAt).getTime();
+      } else if (lastLoginAt.toMillis) {
+        loginTimestampMs = lastLoginAt.toMillis();
+      } else if (lastLoginAt.seconds) {
+        loginTimestampMs = lastLoginAt.seconds * 1000;
+      } else if (typeof lastLoginAt === 'number') {
+        loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
+      }
+    } catch (e) {
+      console.log(`⚠️ [${role}] Error parsing login timestamp for user ${userId}`);
+    }
+    
+    if (!loginTimestampMs || isNaN(loginTimestampMs)) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp`);
+      return;
+    }
+    
+    const currentTime = Date.now();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+    const timeSinceLogin = currentTime - loginTimestampMs;
+    
+    if (timeSinceLogin > THIRTY_DAYS_MS) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} last logged in ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
+      return;
+    }
+    
     // Role must match
     if (String(userData.role).toLowerCase() !== role) {
       console.log(`⏭️ [${role}] SKIP - user ${userId} role (${userData.role}) doesn't match alert role (${role})`);
       return;
     }
     
-    console.log(`✅ [${role}] User ${userId} (${userData.uid}) is logged in with role ${userData.role}`);
+    console.log(`✅ [${role}] User ${userId} (${userData.uid}) is logged in with role ${userData.role} (last login: ${Math.floor(timeSinceLogin / (60 * 60 * 1000))} hours ago)`);
     
     // CRITICAL STEP 4: Verify alert belongs to this user
     if (role === 'student') {
@@ -160,6 +191,7 @@ const sendPushForAlert = async (alert, role, userId) => {
       
       // Try multiple queries to find the link (handle both UID and canonical ID formats)
       let linkFound = false;
+      let linkDocument = null; // Store the link document to get FCM tokens
       const parentIdNumber = userData?.parentId || userData?.parentIdNumber || userId;
       
       // Query 1: By parent UID and studentId (UID)
@@ -173,6 +205,7 @@ const sendPushForAlert = async (alert, role, userId) => {
         
         if (!linkQuery1.empty) {
           linkFound = true;
+          linkDocument = linkQuery1.docs[0]; // Store link document
           console.log(`✅ [${role}] Link found: parent ${userId} (${userData.uid}) linked to student ${alertStudentId} via parentId+studentId`);
         }
       } catch (e) {
@@ -191,6 +224,7 @@ const sendPushForAlert = async (alert, role, userId) => {
           
           if (!linkQuery2.empty) {
             linkFound = true;
+            linkDocument = linkQuery2.docs[0]; // Store link document
             console.log(`✅ [${role}] Link found: parent ${userId} (${parentIdNumber}) linked to student ${alertStudentId} via parentIdNumber+studentId`);
           }
         } catch (e) {
@@ -210,6 +244,7 @@ const sendPushForAlert = async (alert, role, userId) => {
           
           if (!linkQuery3.empty) {
             linkFound = true;
+            linkDocument = linkQuery3.docs[0]; // Store link document
             console.log(`✅ [${role}] Link found: parent ${userId} (${parentIdNumber}) linked to student ${alertStudentId} via canonical IDs`);
           }
         } catch (e) {
@@ -229,6 +264,7 @@ const sendPushForAlert = async (alert, role, userId) => {
           
           if (!linkQuery4.empty) {
             linkFound = true;
+            linkDocument = linkQuery4.docs[0]; // Store link document
             console.log(`✅ [${role}] Link found: parent ${userId} (${userData.uid}) linked to student ${alertStudentId} via parentId+studentIdNumber`);
           }
         } catch (e) {
@@ -242,17 +278,107 @@ const sendPushForAlert = async (alert, role, userId) => {
       }
       
       console.log(`✅ [${role}] VERIFIED: Parent ${userId} (${userData.uid}) is actively linked to student ${alertStudentId}`);
+      
+      // For attendance_scan alerts, use FCM token from parent_student_links if available
+      // BUT STILL VERIFY USER IS LOGGED IN - we already checked above, so this is safe
+      if (linkDocument && (alert.type === 'attendance_scan' || alert.alertType === 'attendance_scan')) {
+        const linkData = linkDocument.data();
+        const linkParentFcmToken = linkData?.parentFcmToken || null;
+        
+        // CRITICAL: Only use link token if user is still logged in (we already verified this above)
+        // Double-check that userData still shows they're logged in
+        if (linkParentFcmToken && userData?.fcmToken && userData?.lastLoginAt) {
+          // Use FCM token from parent_student_links for attendance scans
+          const title = alert.title || 'New Alert';
+          const body = alert.message || alert.body || 'You have a new alert';
+          
+          console.log(`✅ ALL VALIDATIONS PASSED - Sending push to ${role} ${userId} using FCM token from parent_student_links`);
+          console.log(`   User: ${userData.uid}, Role: ${userData.role}, Using link token: ${!!linkParentFcmToken}`);
+          console.log(`   User is verified logged in: role=${!!userData.role}, uid=${!!userData.uid}, fcmToken=${!!userData.fcmToken}, lastLoginAt=${!!userData.lastLoginAt}`);
+          
+          await pushService.sendPush(
+            linkParentFcmToken,
+            title,
+            body,
+            {
+              type: 'alert',
+              alertId: alertId,
+              alertType: alert.type || alert.alertType,
+              studentId: alert.studentId || '',
+              parentId: alert.parentId || '',
+              status: alert.status || 'unread',
+              ...alert
+            }
+          );
+          
+          // Mark as notified
+          notifiedAlerts.set(deduplicationKey, Date.now());
+          console.log(`✅✅✅ PUSH SENT to ${role} ${userId} (${userData.uid}) using link token - ${title}`);
+          return; // Exit early - notification sent using link token
+        } else {
+          if (!linkParentFcmToken) {
+            console.log(`⚠️ [${role}] No FCM token in parent_student_links, falling back to users collection token`);
+          } else {
+            console.log(`⚠️ [${role}] User not verified logged in (missing: role=${!!userData?.role}, uid=${!!userData?.uid}, fcmToken=${!!userData?.fcmToken}, lastLoginAt=${!!userData?.lastLoginAt}), falling back to users collection token`);
+          }
+          // Fall through to use userData.fcmToken (which will be validated below)
+        }
+      }
     }
     
-    // ALL VALIDATIONS PASSED - Send notification
+    // ALL VALIDATIONS PASSED - Send notification using FCM token from users collection
+    // This is for non-attendance_scan alerts OR if link token is not available
     const title = alert.title || 'New Alert';
     const body = alert.message || alert.body || 'You have a new alert';
     
+    // CRITICAL: For specific user notifications (not attendance scans), verify user identity
+    // Get complete user info to ensure we're sending to the right person
+    const userInfo = {
+      uid: userData.uid,
+      firstName: userData.firstName || '',
+      lastName: userData.lastName || '',
+      email: userData.email || '',
+      parentId: userData.parentId || userData.parentIdNumber || null,
+      studentId: userData.studentId || userData.studentIdNumber || null,
+      fcmToken: userData.fcmToken
+    };
+    
     console.log(`✅ ALL VALIDATIONS PASSED - Sending push to ${role} ${userId}`);
-    console.log(`   User: ${userData.uid}, Role: ${userData.role}, HasToken: ${!!userData.fcmToken}`);
+    console.log(`   User Info: uid=${userInfo.uid}, firstName=${userInfo.firstName}, lastName=${userInfo.lastName}, email=${userInfo.email}`);
+    console.log(`   HasToken: ${!!userInfo.fcmToken}`);
+    
+    // Verify alert belongs to this specific user before sending
+    if (role === 'student') {
+      // For students, verify studentId matches
+      const alertStudentId = alert.studentId || alert.student_id;
+      if (alertStudentId && userInfo.studentId) {
+        const normalizedAlert = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
+        const normalizedUser = String(userInfo.studentId).replace(/-/g, '').trim().toLowerCase();
+        if (normalizedAlert !== normalizedUser) {
+          console.log(`⏭️ [${role}] SKIP - alert studentId (${alertStudentId}) doesn't match user studentId (${userInfo.studentId})`);
+          return; // Alert doesn't belong to this user
+        }
+      }
+    } else if (role === 'parent') {
+      // For parents, verify parentId matches (already verified link above, but double-check)
+      const alertParentId = alert.parentId || alert.parent_id;
+      if (alertParentId && userInfo.parentId) {
+        const normalizedAlert = String(alertParentId).replace(/-/g, '').trim().toLowerCase();
+        const normalizedUser = String(userInfo.parentId).replace(/-/g, '').trim().toLowerCase();
+        if (normalizedAlert !== normalizedUser && alertParentId !== userInfo.uid) {
+          console.log(`⏭️ [${role}] SKIP - alert parentId (${alertParentId}) doesn't match user parentId (${userInfo.parentId})`);
+          return; // Alert doesn't belong to this user
+        }
+      }
+    }
+    
+    if (!userInfo.fcmToken) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has no FCM token`);
+      return;
+    }
     
     await pushService.sendPush(
-      userData.fcmToken,
+      userInfo.fcmToken,
       title,
       body,
       {
@@ -394,8 +520,47 @@ const initializeStudentAlertsListener = () => {
           }
           
           const userDataCheck = userDocCheck.data();
-          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken || (!userDataCheck?.lastLoginAt && !userDataCheck?.pushTokenUpdatedAt)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} is not logged in`);
+          
+          // Check all required fields
+          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} is missing required fields (role=${!!userDataCheck?.role}, uid=${!!userDataCheck?.uid}, fcmToken=${!!userDataCheck?.fcmToken})`);
+            continue;
+          }
+          
+          // Check login timestamp exists
+          const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
+          if (!lastLoginAtCheck) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} never logged in (no timestamp)`);
+            continue;
+          }
+          
+          // Check login timestamp is recent (within 30 days)
+          let loginTimestampMsCheck = null;
+          try {
+            if (typeof lastLoginAtCheck === 'string') {
+              loginTimestampMsCheck = new Date(lastLoginAtCheck).getTime();
+            } else if (lastLoginAtCheck.toMillis) {
+              loginTimestampMsCheck = lastLoginAtCheck.toMillis();
+            } else if (lastLoginAtCheck.seconds) {
+              loginTimestampMsCheck = lastLoginAtCheck.seconds * 1000;
+            } else if (typeof lastLoginAtCheck === 'number') {
+              loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
+            }
+          } catch (e) {
+            console.log(`⚠️ [LISTENER] Error parsing login timestamp for user ${studentId}`);
+          }
+          
+          if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} has invalid login timestamp`);
+            continue;
+          }
+          
+          const nowCheck = Date.now();
+          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+          const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
+          
+          if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} last logged in ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
             continue;
           }
           
@@ -538,8 +703,47 @@ const initializeParentAlertsListener = () => {
           }
           
           const userDataCheck = userDocCheck.data();
-          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken || (!userDataCheck?.lastLoginAt && !userDataCheck?.pushTokenUpdatedAt)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} is not logged in`);
+          
+          // Check all required fields
+          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} is missing required fields (role=${!!userDataCheck?.role}, uid=${!!userDataCheck?.uid}, fcmToken=${!!userDataCheck?.fcmToken})`);
+            continue;
+          }
+          
+          // Check login timestamp exists
+          const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
+          if (!lastLoginAtCheck) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} never logged in (no timestamp)`);
+            continue;
+          }
+          
+          // Check login timestamp is recent (within 30 days)
+          let loginTimestampMsCheck = null;
+          try {
+            if (typeof lastLoginAtCheck === 'string') {
+              loginTimestampMsCheck = new Date(lastLoginAtCheck).getTime();
+            } else if (lastLoginAtCheck.toMillis) {
+              loginTimestampMsCheck = lastLoginAtCheck.toMillis();
+            } else if (lastLoginAtCheck.seconds) {
+              loginTimestampMsCheck = lastLoginAtCheck.seconds * 1000;
+            } else if (typeof lastLoginAtCheck === 'number') {
+              loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
+            }
+          } catch (e) {
+            console.log(`⚠️ [LISTENER] Error parsing login timestamp for user ${parentId}`);
+          }
+          
+          if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} has invalid login timestamp`);
+            continue;
+          }
+          
+          const nowCheck = Date.now();
+          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+          const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
+          
+          if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} last logged in ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
             continue;
           }
           

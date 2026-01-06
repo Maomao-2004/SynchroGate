@@ -33,6 +33,8 @@ import { onSnapshot } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import { sendAlertPushNotification } from '../../utils/pushNotificationHelper';
+import { updateLinkFcmTokens, getLinkFcmTokens } from '../../utils/linkFcmTokenManager';
+import { generateAndSavePushToken } from '../../utils/pushTokenGenerator';
 const AboutLogo = require('../../assets/logo.png');
 
 const { width, height } = Dimensions.get('window');
@@ -606,6 +608,99 @@ const Alerts = () => {
         parentIdNumber: String(user?.parentId || user?.uid || ''),
       });
 
+      // Helper function to resolve student document ID (used for both FCM tokens and notifications)
+      const resolveStudentDocId = async (studentUidOrId) => {
+        try {
+          const raw = String(studentUidOrId || '').trim();
+          // First try: if it already includes '-', it's canonical
+          if (raw && raw.includes('-')) {
+            return raw;
+          }
+          
+          // Second try: get from parent_student_links document (most reliable - check studentIdNumber field first)
+          if (alert.linkId) {
+            try {
+              const linkSnap = await getDoc(doc(db, 'parent_student_links', String(alert.linkId || '')));
+              if (linkSnap.exists()) {
+                const l = linkSnap.data() || {};
+                // Prefer studentIdNumber (canonical) over studentId (might be UID)
+                const cand = String(l.studentIdNumber || l.studentNumber || '').trim();
+                if (cand && cand.includes('-')) {
+                  return cand;
+                }
+                // Also check if studentId in link is canonical
+                const linkStudentId = String(l.studentId || '').trim();
+                if (linkStudentId && linkStudentId.includes('-')) {
+                  return linkStudentId;
+                }
+              }
+            } catch {}
+          }
+          
+          // Third try: query users collection by UID to get canonical studentId
+          try {
+            const qSnap = await getDocs(query(collection(db, 'users'), where('uid', '==', raw), where('role', '==', 'student')));
+            if (!qSnap.empty) {
+              const data = qSnap.docs[0].data() || {};
+              const cand = String(data.studentId || data.studentID || data.studentIdNumber || data.studentNumber || data.lrn || '').trim();
+              if (cand && cand.includes('-')) {
+                return cand;
+              }
+            }
+          } catch {}
+          
+          // Fallback: if no canonical ID found, use the raw value (might be UID or studentId)
+          return raw;
+        } catch (e) {
+          return String(studentUidOrId || '').trim();
+        }
+      };
+
+      // Step 1.5: Get and store FCM tokens for both parent and student in the link
+      try {
+        // Get parent's FCM token from users collection
+        const parentDocId = await getParentDocId();
+        const parentUserRef = doc(db, 'users', parentDocId);
+        const parentUserSnap = await getDoc(parentUserRef);
+        const parentFcmToken = parentUserSnap.exists() ? (parentUserSnap.data()?.fcmToken || null) : null;
+
+        // If parent doesn't have FCM token, try to generate one
+        let finalParentFcmToken = parentFcmToken;
+        if (!finalParentFcmToken && user) {
+          try {
+            finalParentFcmToken = await generateAndSavePushToken(user);
+          } catch (e) {
+            console.warn('Could not generate parent FCM token:', e);
+          }
+        }
+
+        // Get student's FCM token from users collection
+        let studentFcmToken = null;
+        if (alert.studentId) {
+          const studentDocId = await resolveStudentDocId(alert.studentId);
+          const studentUserRef = doc(db, 'users', studentDocId);
+          const studentUserSnap = await getDoc(studentUserRef);
+          if (studentUserSnap.exists()) {
+            const studentUserData = studentUserSnap.data();
+            studentFcmToken = studentUserData?.fcmToken || null;
+
+            // If student doesn't have FCM token, we can't generate it here (they need to log in)
+            // But we'll store null and update it when they next log in
+          }
+        }
+
+        // Store FCM tokens in the link document
+        await updateLinkFcmTokens(alert.linkId, finalParentFcmToken, studentFcmToken);
+        console.log('✅ Stored FCM tokens in parent_student_links:', {
+          linkId: alert.linkId,
+          hasParentToken: !!finalParentFcmToken,
+          hasStudentToken: !!studentFcmToken
+        });
+      } catch (fcmError) {
+        console.warn('⚠️ Failed to store FCM tokens in link (non-blocking):', fcmError);
+        // Continue with link acceptance even if FCM token storage fails
+      }
+
       // Step 2: Create accepted notification for student
       const acceptedNotification = {
         id: `${alert.linkId}_accepted_${Date.now()}`,
@@ -623,55 +718,8 @@ const Alerts = () => {
 
       console.log('✅ PARENT ACCEPT: Creating accepted notification for student:', acceptedNotification);
 
-      // Add to student alerts - must resolve correct student document ID (canonical studentId, not UID)
+      // Add to student alerts - resolveStudentDocId was already defined above in Step 1.5
       if (alert.studentId) {
-        const resolveStudentDocId = async (studentUidOrId) => {
-          try {
-            const raw = String(studentUidOrId || '').trim();
-            // First try: if it already includes '-', it's canonical
-            if (raw && raw.includes('-')) {
-              return raw;
-            }
-            
-            // Second try: get from parent_student_links document (most reliable - check studentIdNumber field first)
-            if (alert.linkId) {
-              try {
-                const linkSnap = await getDoc(doc(db, 'parent_student_links', String(alert.linkId || '')));
-                if (linkSnap.exists()) {
-                  const l = linkSnap.data() || {};
-                  // Prefer studentIdNumber (canonical) over studentId (might be UID)
-                  const cand = String(l.studentIdNumber || l.studentNumber || '').trim();
-                  if (cand && cand.includes('-')) {
-                    return cand;
-                  }
-                  // Also check if studentId in link is canonical
-                  const linkStudentId = String(l.studentId || '').trim();
-                  if (linkStudentId && linkStudentId.includes('-')) {
-                    return linkStudentId;
-                  }
-                }
-              } catch {}
-            }
-            
-            // Third try: query users collection by UID to get canonical studentId
-            try {
-              const qSnap = await getDocs(query(collection(db, 'users'), where('uid', '==', raw), where('role', '==', 'student')));
-              if (!qSnap.empty) {
-                const data = qSnap.docs[0].data() || {};
-                const cand = String(data.studentId || data.studentID || data.studentIdNumber || data.studentNumber || data.lrn || '').trim();
-                if (cand && cand.includes('-')) {
-                  return cand;
-                }
-              }
-            } catch {}
-            
-            // Fallback: if no canonical ID found, use the raw value (might be UID or studentId)
-            return raw;
-          } catch (e) {
-            return String(studentUidOrId || '').trim();
-          }
-        };
-
         const studentDocId = await resolveStudentDocId(alert.studentId);
         console.log('✅ PARENT ACCEPT: Resolved student document ID:', studentDocId, 'from alert.studentId:', alert.studentId);
         
@@ -763,53 +811,6 @@ const Alerts = () => {
 
       // Add to student alerts - must resolve correct student document ID (canonical studentId, not UID)
       if (alert.studentId) {
-        const resolveStudentDocId = async (studentUidOrId) => {
-          try {
-            const raw = String(studentUidOrId || '').trim();
-            // First try: if it already includes '-', it's canonical
-            if (raw && raw.includes('-')) {
-              return raw;
-            }
-            
-            // Second try: get from parent_student_links document (most reliable - check studentIdNumber field first)
-            if (alert.linkId) {
-              try {
-                const linkSnap = await getDoc(doc(db, 'parent_student_links', String(alert.linkId || '')));
-                if (linkSnap.exists()) {
-                  const l = linkSnap.data() || {};
-                  // Prefer studentIdNumber (canonical) over studentId (might be UID)
-                  const cand = String(l.studentIdNumber || l.studentNumber || '').trim();
-                  if (cand && cand.includes('-')) {
-                    return cand;
-                  }
-                  // Also check if studentId in link is canonical
-                  const linkStudentId = String(l.studentId || '').trim();
-                  if (linkStudentId && linkStudentId.includes('-')) {
-                    return linkStudentId;
-                  }
-                }
-              } catch {}
-            }
-            
-            // Third try: query users collection by UID to get canonical studentId
-            try {
-              const qSnap = await getDocs(query(collection(db, 'users'), where('uid', '==', raw), where('role', '==', 'student')));
-              if (!qSnap.empty) {
-                const data = qSnap.docs[0].data() || {};
-                const cand = String(data.studentId || data.studentID || data.studentIdNumber || data.studentNumber || data.lrn || '').trim();
-                if (cand && cand.includes('-')) {
-                  return cand;
-                }
-              }
-            } catch {}
-            
-            // Fallback: if no canonical ID found, use the raw value (might be UID or studentId)
-            return raw;
-          } catch (e) {
-            return String(studentUidOrId || '').trim();
-          }
-        };
-
         const studentDocId = await resolveStudentDocId(alert.studentId);
         console.log('🔴 PARENT DECLINE: Resolved student document ID:', studentDocId, 'from alert.studentId:', alert.studentId);
         

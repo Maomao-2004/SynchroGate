@@ -95,3 +95,5 @@ The backend uses Expo Push Notification service. Make sure:
 2. Add your custom domain
 3. Configure DNS as instructed by Railway
 
+
+

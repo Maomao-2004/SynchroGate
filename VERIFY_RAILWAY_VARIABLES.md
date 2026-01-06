@@ -71,3 +71,5 @@ After redeploy, check **Runtime Logs**. You should see:
 
 If test variable doesn't appear, Railway isn't passing variables to the container at all.
 
+
+

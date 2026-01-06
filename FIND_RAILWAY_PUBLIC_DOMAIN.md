@@ -48,3 +48,5 @@ Once you find the public domain (e.g., `synchrogate-production.up.railway.app`):
 - ✅ Add `/api` at the end
 - ✅ Always use `https://`
 
+
+

@@ -22,3 +22,5 @@ if [ -d "android/app/src/release" ]; then
   echo "✅ Successfully copied google-services.json to android/app/src/release/"
 fi
 
+
+

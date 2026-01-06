@@ -28,3 +28,5 @@ mkdir -p android/app/src/release
 cp google-services.json android/app/src/release/google-services.json
 echo "✅ Copied google-services.json to android/app/src/release/"
 
+
+

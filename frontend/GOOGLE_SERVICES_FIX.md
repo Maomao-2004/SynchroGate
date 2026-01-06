@@ -156,3 +156,5 @@ The build should now find `google-services.json` in the expected location.
 - **Path**: The file should be in the `frontend/` directory root (where `app.json` is located)
 - **Package Name**: Ensure the `package_name` in `google-services.json` matches your `app.json` Android package name (`com.palabay.synchrogate`)
 
+
+

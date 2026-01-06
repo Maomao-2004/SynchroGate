@@ -58,3 +58,5 @@ Replace `synchrogate-production.up.railway.app` with your actual generated domai
 3. Refresh the page
 4. The domain should appear automatically, or the button will show up
 
+
+

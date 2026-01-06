@@ -84,3 +84,5 @@ After rebuilding:
 - ✅ Frontend code updated to use Railway URL
 - ⏳ **You need to**: Update `app.json` with your actual Railway URL and rebuild
 
+
+

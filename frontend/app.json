@@ -68,9 +68,9 @@
       "env": "production",
       "apiBaseUrl": "https://synchrogate-production.up.railway.app/api",
       "eas": {
-        "projectId": "abd90397-3092-4974-bf6d-3f9bdee7b128"
+        "projectId": "73f6d057-1ddd-4dc5-a717-27c9ac664931"
       }
     },
-    "owner": "cij"
+    "owner": "20nest04"
   }
 }

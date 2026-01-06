@@ -42,3 +42,5 @@ After setting the root directory or config:
 - Verify environment variables are set
 - Make sure `backend/src/index.js` exists
 
+
+

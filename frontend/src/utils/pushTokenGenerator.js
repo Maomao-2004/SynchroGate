@@ -5,6 +5,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from './firebaseConfig';
+import { updateUserFcmTokenInLinks } from './linkFcmTokenManager';
 
 // Import Firebase initialization - ensures DEFAULT app exists
 import { initializeFirebaseNative, getFirebaseNativeApp } from './firebaseNativeInit';
@@ -268,6 +269,13 @@ export const generateAndSavePushToken = async (user) => {
         tokenLength: fcmToken?.length || 0,
         timestamp: new Date().toISOString()
       });
+
+      // Also update FCM token in all active parent_student_links for this user
+      try {
+        await updateUserFcmTokenInLinks(user, fcmToken);
+      } catch (linkError) {
+        console.warn('⚠️ Failed to update FCM token in links (non-blocking):', linkError?.message);
+      }
     } catch (error) {
       console.error('❌ Failed to save push token to Firestore:', error);
       console.error('   Error details:', {

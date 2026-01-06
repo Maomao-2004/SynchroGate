@@ -95,3 +95,5 @@ If the error persists, there might be hidden characters. Try recreating the file
 
 The file should end at line 38 with just the closing brace `}`, and there should be NO `"hooks"` field anywhere in the file.
 
+
+

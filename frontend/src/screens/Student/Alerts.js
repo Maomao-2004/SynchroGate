@@ -32,6 +32,8 @@ import {
 } from 'firebase/firestore';
 import { onSnapshot } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
+import { updateLinkFcmTokens } from '../../utils/linkFcmTokenManager';
+import { generateAndSavePushToken } from '../../utils/pushTokenGenerator';
 import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import { sendAlertPushNotification } from '../../utils/pushNotificationHelper';
 const AboutLogo = require('../../assets/logo.png');
@@ -482,6 +484,88 @@ const Alerts = () => {
       studentId: String(user?.studentId || ''),
       studentIdNumber: String(user?.studentId || ''),
     });
+
+    // Step 1.5: Get and store FCM tokens for both parent and student in the link
+    try {
+      // Get student's FCM token from users collection
+      const studentUserRef = doc(db, 'users', user.studentId);
+      const studentUserSnap = await getDoc(studentUserRef);
+      const studentFcmToken = studentUserSnap.exists() ? (studentUserSnap.data()?.fcmToken || null) : null;
+
+      // If student doesn't have FCM token, try to generate one
+      let finalStudentFcmToken = studentFcmToken;
+      if (!finalStudentFcmToken && user) {
+        try {
+          finalStudentFcmToken = await generateAndSavePushToken(user);
+        } catch (e) {
+          console.warn('Could not generate student FCM token:', e);
+        }
+      }
+
+      // Get parent's FCM token from users collection
+      let parentFcmToken = null;
+      if (alert.parentId) {
+        const resolveParentDocId = async (parentUid, linkId) => {
+          try {
+            // First try: if parentUid already includes '-', it's canonical
+            const raw = String(parentUid || '').trim();
+            if (raw && raw.includes('-')) {
+              return raw;
+            }
+            
+            // Second try: query users collection by UID to get canonical parentId
+            try {
+              const qSnap = await getDocs(query(collection(db, 'users'), where('uid', '==', raw), where('role', '==', 'parent')));
+              if (!qSnap.empty) {
+                const data = qSnap.docs[0].data() || {};
+                const cand = String(data.parentId || data.parentIdCanonical || '').trim();
+                if (cand && cand.includes('-')) {
+                  return cand;
+                }
+              }
+            } catch {}
+            
+            // Third try: get from parent_student_links document
+            if (linkId) {
+              try {
+                const linkSnap = await getDoc(doc(db, 'parent_student_links', String(linkId || '')));
+                if (linkSnap.exists()) {
+                  const l = linkSnap.data() || {};
+                  const cand = String(l.parentIdNumber || l.parentNumber || l.parentId || '').trim();
+                  if (cand && cand.includes('-')) {
+                    return cand;
+                  }
+                }
+              } catch {}
+            }
+            
+            // Fallback to UID
+            return raw;
+          } catch (e) {
+            return String(parentUid || '').trim();
+          }
+        };
+
+        const parentDocId = await resolveParentDocId(alert.parentId, alert.linkId);
+        const parentUserRef = doc(db, 'users', parentDocId);
+        const parentUserSnap = await getDoc(parentUserRef);
+        if (parentUserSnap.exists()) {
+          const parentUserData = parentUserSnap.data();
+          parentFcmToken = parentUserData?.fcmToken || null;
+        }
+      }
+
+      // Store FCM tokens in the link document
+      await updateLinkFcmTokens(alert.linkId, parentFcmToken, finalStudentFcmToken);
+      console.log('✅ Stored FCM tokens in parent_student_links:', {
+        linkId: alert.linkId,
+        hasParentToken: !!parentFcmToken,
+        hasStudentToken: !!finalStudentFcmToken
+      });
+    } catch (fcmError) {
+      console.warn('⚠️ Failed to store FCM tokens in link (non-blocking):', fcmError);
+      // Continue with link acceptance even if FCM token storage fails
+    }
 
     // Step 2: Create accepted notification for parent
     const acceptedNotification = {

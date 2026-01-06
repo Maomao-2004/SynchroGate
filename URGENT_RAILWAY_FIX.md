@@ -68,3 +68,5 @@ If you can't set Root Directory, we can delete the root `package.json` to force 
 
 **DO THIS NOW:** Set Root Directory to `backend` in Railway Settings. This is the only reliable solution.
 
+
+
