@@ -51,6 +51,69 @@ const sendPushForAlert = async (alert, role, userId) => {
     
     const userData = userDoc.data();
     
+    // CRITICAL: Check login status FIRST before any other validation
+    // This prevents sending to users who haven't logged in yet
+    if (!userData?.role) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has no role (NOT LOGGED IN)`);
+      return;
+    }
+    
+    if (!userData?.uid) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has no uid (NOT AUTHENTICATED)`);
+      return;
+    }
+    
+    if (!userData?.fcmToken) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has no fcmToken (NOT REGISTERED FOR NOTIFICATIONS)`);
+      return;
+    }
+    
+    // Must have login timestamp - if missing, user has NEVER logged in
+    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
+    if (!lastLoginAt) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} NEVER LOGGED IN (no timestamp)`);
+      return;
+    }
+    
+    // CRITICAL: Check login recency IMMEDIATELY - reject if not logged in within 30 days
+    let loginTimestampMs = null;
+    try {
+      if (typeof lastLoginAt === 'string') {
+        loginTimestampMs = new Date(lastLoginAt).getTime();
+      } else if (lastLoginAt.toMillis) {
+        loginTimestampMs = lastLoginAt.toMillis();
+      } else if (lastLoginAt.seconds) {
+        loginTimestampMs = lastLoginAt.seconds * 1000;
+      } else if (typeof lastLoginAt === 'number') {
+        loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
+      }
+    } catch (e) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp format`);
+      return;
+    }
+    
+    if (!loginTimestampMs || isNaN(loginTimestampMs)) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp (NOT LOGGED IN)`);
+      return;
+    }
+    
+    const currentTime = Date.now();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const timeSinceLogin = currentTime - loginTimestampMs;
+    
+    if (timeSinceLogin > THIRTY_DAYS_MS) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
+      return;
+    }
+    
+    // Role must match - reject if role doesn't match
+    if (String(userData.role).toLowerCase() !== role.toLowerCase()) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} role (${userData.role}) doesn't match alert role (${role})`);
+      return;
+    }
+    
+    console.log(`✅ [${role}] User ${userId} (${userData.uid}) is VERIFIED LOGGED IN - role: ${userData.role}, last login: ${Math.floor(timeSinceLogin / (60 * 60 * 1000))} hours ago`);
+    
     // CRITICAL STEP 2: Verify document ID matches user's ID field
     // For students: document ID must match userData.studentId EXACTLY
     // For parents: document ID must match userData.parentId EXACTLY
@@ -123,68 +186,7 @@ const sendPushForAlert = async (alert, role, userId) => {
       console.log(`✅ [${role}] Alert is verified as admin alert (type: ${alertType})`);
     }
     
-    // CRITICAL STEP 3: User MUST be logged in
-    // Must have: role, UID, FCM token, and login timestamp
-    if (!userData?.role) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no role (not logged in)`);
-      return;
-    }
-    
-    if (!userData?.uid) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no uid (not authenticated)`);
-      return;
-    }
-    
-    if (!userData?.fcmToken) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no fcmToken (not registered for notifications)`);
-      return;
-    }
-    
-    // Must have login timestamp
-    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-    if (!lastLoginAt) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} never logged in (no timestamp)`);
-      return;
-    }
-    
-    // CRITICAL: Check if login timestamp is recent (within last 30 days)
-    // This ensures we only send to users who are actively using the app
-    let loginTimestampMs = null;
-    try {
-      if (typeof lastLoginAt === 'string') {
-        loginTimestampMs = new Date(lastLoginAt).getTime();
-      } else if (lastLoginAt.toMillis) {
-        loginTimestampMs = lastLoginAt.toMillis();
-      } else if (lastLoginAt.seconds) {
-        loginTimestampMs = lastLoginAt.seconds * 1000;
-      } else if (typeof lastLoginAt === 'number') {
-        loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
-      }
-    } catch (e) {
-      console.log(`⚠️ [${role}] Error parsing login timestamp for user ${userId}`);
-    }
-    
-    if (!loginTimestampMs || isNaN(loginTimestampMs)) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp`);
-      return;
-    }
-    
-    const currentTime = Date.now();
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
-    const timeSinceLogin = currentTime - loginTimestampMs;
-    
-    if (timeSinceLogin > THIRTY_DAYS_MS) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} last logged in ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
-      return;
-    }
-    
-    // Role must match
-    if (String(userData.role).toLowerCase() !== role) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} role (${userData.role}) doesn't match alert role (${role})`);
-      return;
-    }
-    
-    console.log(`✅ [${role}] User ${userId} (${userData.uid}) is logged in with role ${userData.role} (last login: ${Math.floor(timeSinceLogin / (60 * 60 * 1000))} hours ago)`);
+    // Login status already verified above - no need to check again
     
     // CRITICAL STEP 4: Verify alert belongs to this user
     if (role === 'student') {
@@ -556,7 +558,8 @@ const initializeStudentAlertsListener = () => {
             alert.studentId = studentId;
           }
           
-          // DOUBLE CHECK: Verify user exists and is logged in BEFORE calling sendPushForAlert
+          // CRITICAL: Verify user exists and is FULLY logged in BEFORE calling sendPushForAlert
+          // Check login status FIRST - reject immediately if not logged in
           const userDocCheck = await firestore.collection('users').doc(studentId).get();
           if (!userDocCheck.exists) {
             console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${studentId} does not exist`);
@@ -565,20 +568,30 @@ const initializeStudentAlertsListener = () => {
           
           const userDataCheck = userDocCheck.data();
           
-          // Check all required fields
-          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} is missing required fields (role=${!!userDataCheck?.role}, uid=${!!userDataCheck?.uid}, fcmToken=${!!userDataCheck?.fcmToken})`);
+          // CRITICAL: Check login status FIRST - reject if not logged in
+          if (!userDataCheck?.role) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (no role)`);
             continue;
           }
           
-          // Check login timestamp exists
+          if (!userDataCheck?.uid) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT AUTHENTICATED (no uid)`);
+            continue;
+          }
+          
+          if (!userDataCheck?.fcmToken) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT REGISTERED (no fcmToken)`);
+            continue;
+          }
+          
+          // Check login timestamp exists - if missing, user has NEVER logged in
           const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
           if (!lastLoginAtCheck) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} never logged in (no timestamp)`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NEVER LOGGED IN (no timestamp)`);
             continue;
           }
           
-          // Check login timestamp is recent (within 30 days)
+          // Check login timestamp is recent (within 30 days) - reject if not logged in recently
           let loginTimestampMsCheck = null;
           try {
             if (typeof lastLoginAtCheck === 'string') {
@@ -591,11 +604,12 @@ const initializeStudentAlertsListener = () => {
               loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
             }
           } catch (e) {
-            console.log(`⚠️ [LISTENER] Error parsing login timestamp for user ${studentId}`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} has invalid login timestamp format`);
+            continue;
           }
           
           if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} has invalid login timestamp`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (invalid timestamp)`);
             continue;
           }
           
@@ -604,16 +618,17 @@ const initializeStudentAlertsListener = () => {
           const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
           
           if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} last logged in ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
             continue;
           }
           
+          // Role must match
           if (String(userDataCheck.role).toLowerCase() !== 'student') {
             console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} role (${userDataCheck.role}) is not student`);
             continue;
           }
           
-          console.log(`📨 [LISTENER] Processing NEW alert for student ${studentId} (${userDataCheck.uid}): ${alert.id || alert.alertId}`);
+          console.log(`✅ [LISTENER] User ${studentId} VERIFIED LOGGED IN - proceeding to sendPushForAlert`);
           await sendPushForAlert(alert, 'student', studentId);
         }
       }
@@ -739,7 +754,8 @@ const initializeParentAlertsListener = () => {
             alert.parentId = parentId;
           }
           
-          // DOUBLE CHECK: Verify user exists and is logged in BEFORE calling sendPushForAlert
+          // CRITICAL: Verify user exists and is FULLY logged in BEFORE calling sendPushForAlert
+          // Check login status FIRST - reject immediately if not logged in
           const userDocCheck = await firestore.collection('users').doc(parentId).get();
           if (!userDocCheck.exists) {
             console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${parentId} does not exist`);
@@ -748,20 +764,30 @@ const initializeParentAlertsListener = () => {
           
           const userDataCheck = userDocCheck.data();
           
-          // Check all required fields
-          if (!userDataCheck?.role || !userDataCheck?.uid || !userDataCheck?.fcmToken) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} is missing required fields (role=${!!userDataCheck?.role}, uid=${!!userDataCheck?.uid}, fcmToken=${!!userDataCheck?.fcmToken})`);
+          // CRITICAL: Check login status FIRST - reject if not logged in
+          if (!userDataCheck?.role) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (no role)`);
             continue;
           }
           
-          // Check login timestamp exists
+          if (!userDataCheck?.uid) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT AUTHENTICATED (no uid)`);
+            continue;
+          }
+          
+          if (!userDataCheck?.fcmToken) {
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT REGISTERED (no fcmToken)`);
+            continue;
+          }
+          
+          // Check login timestamp exists - if missing, user has NEVER logged in
           const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
           if (!lastLoginAtCheck) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} never logged in (no timestamp)`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NEVER LOGGED IN (no timestamp)`);
             continue;
           }
           
-          // Check login timestamp is recent (within 30 days)
+          // Check login timestamp is recent (within 30 days) - reject if not logged in recently
           let loginTimestampMsCheck = null;
           try {
             if (typeof lastLoginAtCheck === 'string') {
@@ -774,11 +800,12 @@ const initializeParentAlertsListener = () => {
               loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
             }
           } catch (e) {
-            console.log(`⚠️ [LISTENER] Error parsing login timestamp for user ${parentId}`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} has invalid login timestamp format`);
+            continue;
           }
           
           if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} has invalid login timestamp`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (invalid timestamp)`);
             continue;
           }
           
@@ -787,14 +814,17 @@ const initializeParentAlertsListener = () => {
           const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
           
           if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} last logged in ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
+            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
             continue;
           }
           
+          // Role must match
           if (String(userDataCheck.role).toLowerCase() !== 'parent') {
             console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} role (${userDataCheck.role}) is not parent`);
             continue;
           }
+          
+          console.log(`✅ [LISTENER] User ${parentId} VERIFIED LOGGED IN - proceeding to sendPushForAlert`);
           
           console.log(`📨 [LISTENER] Processing NEW alert for parent ${parentId} (${userDataCheck.uid}): ${alert.id || alert.alertId}`);
           await sendPushForAlert(alert, 'parent', parentId);
