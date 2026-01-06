@@ -37,12 +37,12 @@ const isUserLoggedIn = (userData) => {
     return false;
   }
   
-  // Must have login timestamp
-  const lastLoginAt = userData.lastLoginAt || userData.pushTokenUpdatedAt;
-  if (!lastLoginAt) {
-    console.log('⏭️ isUserLoggedIn: no login timestamp');
-    return false;
-  }
+// Must have login timestamp (STRICT: do NOT fall back to pushTokenUpdatedAt)
+const lastLoginAt = userData.lastLoginAt;
+if (!lastLoginAt) {
+  console.log('⏭️ isUserLoggedIn: no lastLoginAt timestamp (treating as logged out)');
+  return false;
+}
   
   // Parse timestamp
   let loginTimestampMs = null;
@@ -57,7 +57,7 @@ const isUserLoggedIn = (userData) => {
       loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
     }
   } catch (e) {
-    console.log('⏭️ isUserLoggedIn: error parsing timestamp', e.message);
+    console.log('⏭️ isUserLoggedIn: error parsing lastLoginAt', e.message);
     return false;
   }
   
