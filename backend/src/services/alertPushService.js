@@ -667,57 +667,50 @@ const initializeAdminAlertsListener = () => {
     previousAdminAlertIds = currentAlertIds;
     
     if (newAlerts.length > 0) {
-      // CRITICAL: Get all logged-in admin users with their full data (email, role, FCM token)
-      const adminUsersSnapshot = await firestore.collection('users')
-        .where('role', '==', 'admin')
-        .get();
-      
-      const adminUsers = []; // Store full admin user data
-      
-      adminUsersSnapshot.forEach(doc => {
-        const userData = doc.data();
-        if (isUserLoggedIn(userData) && userData.role === 'admin') {
-          const adminUserId = doc.id === 'Admin' ? 'Admin' : (userData.uid || doc.id);
-          adminUsers.push({
-            userId: adminUserId,
-            email: userData.email || '',
-            role: userData.role || 'admin',
-            fcmToken: userData.fcmToken || null,
-            firstName: userData.firstName || '',
-            lastName: userData.lastName || '',
-            uid: userData.uid || adminUserId
-          });
-          console.log(`✅ [ADMIN LISTENER] Found logged-in admin: ${adminUserId} (${userData.email || 'no email'})`);
-        }
-      });
-      
-      // Check 'Admin' document
-      const adminDoc = await firestore.collection('users').doc('Admin').get();
+      // CRITICAL: Only use the single canonical Admin document as the push target.
+      // We IGNORE any other 'admin' user documents (by uid) to prevent duplicate or wrong targets.
+      const adminUsers = [];
+      const adminDocRef = firestore.collection('users').doc('Admin');
+      const adminDoc = await adminDocRef.get();
+
       if (adminDoc.exists) {
-        const adminData = adminDoc.data();
-        if (isUserLoggedIn(adminData) && adminData.role === 'admin') {
-          const adminExists = adminUsers.some(u => u.userId === 'Admin');
-          if (!adminExists) {
-            adminUsers.push({
-              userId: 'Admin',
-              email: adminData.email || '',
-              role: adminData.role || 'admin',
-              fcmToken: adminData.fcmToken || null,
-              firstName: adminData.firstName || '',
-              lastName: adminData.lastName || '',
-              uid: adminData.uid || 'Admin'
-            });
-            console.log(`✅ [ADMIN LISTENER] Found logged-in Admin document (${adminData.email || 'no email'})`);
-          }
+        const adminData = adminDoc.data() || {};
+        const adminRole = String(adminData.role || '').toLowerCase();
+
+        if (adminRole === 'admin' && isUserLoggedIn(adminData)) {
+          adminUsers.push({
+            userId: 'Admin',
+            email: adminData.email || '',
+            role: adminData.role || 'admin',
+            fcmToken: adminData.fcmToken || null,
+            firstName: adminData.fname || adminData.firstName || '',
+            lastName: adminData.lname || adminData.lastName || '',
+            uid: adminData.uid || 'Admin',
+          });
+
+          console.log('✅ [ADMIN LISTENER] Using canonical Admin document for push notifications:', {
+            userId: 'Admin',
+            email: adminData.email || 'no email',
+            hasFcmToken: !!adminData.fcmToken,
+            hasLastLoginAt: !!adminData.lastLoginAt,
+          });
+        } else {
+          console.log('⏭️ [ADMIN LISTENER] Admin document exists but is NOT considered logged in:', {
+            role: adminData.role,
+            hasFcmToken: !!adminData.fcmToken,
+            hasLastLoginAt: !!adminData.lastLoginAt,
+          });
         }
+      } else {
+        console.log('⏭️ [ADMIN LISTENER] Admin document (users/Admin) does NOT exist');
       }
       
       if (adminUsers.length === 0) {
-        console.log(`⏭️ [ADMIN LISTENER] No logged-in admin users found - skipping ${newAlerts.length} alert(s)`);
+        console.log(`⏭️ [ADMIN LISTENER] No logged-in Admin document found - skipping ${newAlerts.length} alert(s)`);
         return;
       }
       
-      console.log(`📨 [ADMIN LISTENER] Sending ${newAlerts.length} alert(s) to ${adminUsers.length} logged-in admin user(s)`);
+      console.log(`📨 [ADMIN LISTENER] Sending ${newAlerts.length} alert(s) to ${adminUsers.length} logged-in canonical Admin user(s)`);
       
       // Send to each admin individually
       for (const alert of newAlerts) {
