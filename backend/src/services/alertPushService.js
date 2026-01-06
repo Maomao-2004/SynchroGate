@@ -1,5 +1,6 @@
 // alertPushService.js - Backend service to automatically send push notifications when alerts change
-// STRICT VERSION - Only send to the exact logged-in user who owns the alert document
+// ULTRA-STRICT VERSION - Only send to the exact logged-in user who owns the alert document
+// CRITICAL: All alerts must have matching recipient ID before processing
 const { firestore, admin } = require('../config/firebase');
 const pushService = require('./pushService');
 const { getLinkFcmTokens, verifyUserIdentity } = require('../utils/linkFcmTokenHelper');
@@ -16,7 +17,52 @@ let alertListeners = {
 const notifiedAlerts = new Map(); // Key: `${alertId}_${userId}`, Value: timestamp
 
 /**
- * Send push notification for an alert - STRICT VALIDATION
+ * CRITICAL: Verify user is logged in and active
+ * Returns true only if user has ALL required fields and logged in within 30 days
+ */
+const isUserLoggedIn = (userData) => {
+  if (!userData) return false;
+  
+  // Must have role, uid, and fcmToken
+  if (!userData.role || !userData.uid || !userData.fcmToken) {
+    return false;
+  }
+  
+  // Must have login timestamp
+  const lastLoginAt = userData.lastLoginAt || userData.pushTokenUpdatedAt;
+  if (!lastLoginAt) {
+    return false;
+  }
+  
+  // Parse timestamp
+  let loginTimestampMs = null;
+  try {
+    if (typeof lastLoginAt === 'string') {
+      loginTimestampMs = new Date(lastLoginAt).getTime();
+    } else if (lastLoginAt.toMillis) {
+      loginTimestampMs = lastLoginAt.toMillis();
+    } else if (lastLoginAt.seconds) {
+      loginTimestampMs = lastLoginAt.seconds * 1000;
+    } else if (typeof lastLoginAt === 'number') {
+      loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
+    }
+  } catch (e) {
+    return false;
+  }
+  
+  if (!loginTimestampMs || isNaN(loginTimestampMs)) {
+    return false;
+  }
+  
+  // Must be logged in within 30 days
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const timeSinceLogin = Date.now() - loginTimestampMs;
+  
+  return timeSinceLogin <= THIRTY_DAYS_MS;
+};
+
+/**
+ * Send push notification for an alert - ULTRA-STRICT VALIDATION
  * ONLY sends to the user whose document ID matches the alert document ID AND is logged in
  */
 const sendPushForAlert = async (alert, role, userId) => {
@@ -27,150 +73,86 @@ const sendPushForAlert = async (alert, role, userId) => {
     }
 
     const alertId = alert.id || alert.alertId;
+    if (!alertId) {
+      console.log(`⏭️ [${role}] SKIP - alert has no ID`);
+      return;
+    }
+
     const deduplicationKey = `${alertId}_${userId}`;
     const now = Date.now();
     
     // Prevent duplicate notifications (5 minute cooldown)
     const lastNotified = notifiedAlerts.get(deduplicationKey) || 0;
     if (now - lastNotified < 5 * 60 * 1000) {
-      return; // Already notified recently
+      console.log(`⏭️ [${role}] SKIP - already notified ${userId} for alert ${alertId} recently`);
+      return;
     }
 
-    // CRITICAL STEP 1: Get user document by EXACT document ID
-    // userId = document ID in users collection = studentId or parentId
-    // This MUST match exactly - no fallback queries
     console.log(`🔍 [${role}] Checking push for userId: ${userId}, alertId: ${alertId}`);
+
+    // CRITICAL STEP 1: Get user document by EXACT document ID
     const userDoc = await firestore.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
       console.log(`⏭️ [${role}] SKIP - user document ${userId} does not exist`);
-      return; // User doesn't exist - can't send notification
+      return;
     }
-    
-    console.log(`✅ [${role}] User document ${userId} exists`);
     
     const userData = userDoc.data();
     
-    // CRITICAL: Check login status FIRST before any other validation
-    // This prevents sending to users who haven't logged in yet
-    if (!userData?.role) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no role (NOT LOGGED IN)`);
+    // CRITICAL STEP 2: Verify user is logged in FIRST (before any other checks)
+    if (!isUserLoggedIn(userData)) {
+      console.log(`⏭️ [${role}] SKIP - user ${userId} is NOT LOGGED IN or INACTIVE`);
       return;
     }
     
-    if (!userData?.uid) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no uid (NOT AUTHENTICATED)`);
-      return;
-    }
-    
-    if (!userData?.fcmToken) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has no fcmToken (NOT REGISTERED FOR NOTIFICATIONS)`);
-      return;
-    }
-    
-    // Must have login timestamp - if missing, user has NEVER logged in
-    const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-    if (!lastLoginAt) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} NEVER LOGGED IN (no timestamp)`);
-      return;
-    }
-    
-    // CRITICAL: Check login recency IMMEDIATELY - reject if not logged in within 30 days
-    let loginTimestampMs = null;
-    try {
-      if (typeof lastLoginAt === 'string') {
-        loginTimestampMs = new Date(lastLoginAt).getTime();
-      } else if (lastLoginAt.toMillis) {
-        loginTimestampMs = lastLoginAt.toMillis();
-      } else if (lastLoginAt.seconds) {
-        loginTimestampMs = lastLoginAt.seconds * 1000;
-      } else if (typeof lastLoginAt === 'number') {
-        loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
-      }
-    } catch (e) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp format`);
-      return;
-    }
-    
-    if (!loginTimestampMs || isNaN(loginTimestampMs)) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} has invalid login timestamp (NOT LOGGED IN)`);
-      return;
-    }
-    
-    const currentTime = Date.now();
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-    const timeSinceLogin = currentTime - loginTimestampMs;
-    
-    if (timeSinceLogin > THIRTY_DAYS_MS) {
-      console.log(`⏭️ [${role}] SKIP - user ${userId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
-      return;
-    }
-    
-    // Role must match - reject if role doesn't match
+    // CRITICAL STEP 3: Verify role matches
     if (String(userData.role).toLowerCase() !== role.toLowerCase()) {
       console.log(`⏭️ [${role}] SKIP - user ${userId} role (${userData.role}) doesn't match alert role (${role})`);
       return;
     }
     
-    console.log(`✅ [${role}] User ${userId} (${userData.uid}) is VERIFIED LOGGED IN - role: ${userData.role}, last login: ${Math.floor(timeSinceLogin / (60 * 60 * 1000))} hours ago`);
-    
-    // CRITICAL STEP 2: Verify document ID matches user's ID field
-    // For students: document ID must match userData.studentId EXACTLY
-    // For parents: document ID must match userData.parentId EXACTLY
+    // CRITICAL STEP 4: Verify document ID matches user's ID field
     if (role === 'student') {
       const userStudentId = userData.studentId;
       if (!userStudentId) {
         console.log(`⏭️ [${role}] SKIP - user ${userId} has no studentId field`);
         return;
       }
-      // Normalize both for comparison
       const normalizedUserStudentId = String(userStudentId).replace(/-/g, '').trim().toLowerCase();
       const normalizedUserId = String(userId).replace(/-/g, '').trim().toLowerCase();
       if (normalizedUserStudentId !== normalizedUserId) {
         console.log(`⏭️ [${role}] SKIP - document ID (${userId}) doesn't match user's studentId (${userStudentId})`);
-        return; // Wrong user - document ID doesn't match
+        return;
       }
-      console.log(`✅ [${role}] Document ID matches user's studentId: ${userId}`);
     } else if (role === 'parent') {
       const userParentId = userData.parentId || userData.parentIdNumber;
       if (!userParentId) {
         console.log(`⏭️ [${role}] SKIP - user ${userId} has no parentId field`);
         return;
       }
-      // Normalize both for comparison
       const normalizedUserParentId = String(userParentId).replace(/-/g, '').trim().toLowerCase();
       const normalizedUserId = String(userId).replace(/-/g, '').trim().toLowerCase();
       if (normalizedUserParentId !== normalizedUserId) {
         console.log(`⏭️ [${role}] SKIP - document ID (${userId}) doesn't match user's parentId (${userParentId})`);
-        return; // Wrong user - document ID doesn't match
+        return;
       }
-      console.log(`✅ [${role}] Document ID matches user's parentId: ${userId}`);
     } else if (role === 'admin') {
-      // For admin, allow 'Admin' document or document ID = uid
       if (userId !== 'Admin' && userId !== userData.uid) {
         console.log(`⏭️ [${role}] SKIP - admin userId (${userId}) doesn't match uid (${userData.uid})`);
         return;
       }
-      console.log(`✅ [${role}] Admin user validated: ${userId}`);
       
       // CRITICAL: Verify alert is actually an admin alert
-      // Admin alerts should NOT have parentId or studentId (those belong to parent/student alerts)
       const alertType = alert.type || alert.alertType || '';
       const hasParentId = !!(alert.parentId || alert.parent_id);
       const hasStudentId = !!(alert.studentId || alert.student_id);
       
-      // Admin alerts should be admin-specific (like qr_request, system alerts, etc.)
-      // NOT parent/student alerts (like schedule_permission_request, attendance_scan, etc.)
-      const adminOnlyAlertTypes = ['qr_request', 'system_alert', 'admin_notification'];
-      const isAdminOnlyType = adminOnlyAlertTypes.some(t => alertType.toLowerCase().includes(t.toLowerCase()));
-      
-      // If alert has parentId or studentId, it's NOT an admin alert - skip it
       if (hasParentId || hasStudentId) {
-        console.log(`⏭️ [${role}] SKIP - admin alert has parentId (${hasParentId}) or studentId (${hasStudentId}) - this is a parent/student alert, not an admin alert`);
+        console.log(`⏭️ [${role}] SKIP - admin alert has parentId (${hasParentId}) or studentId (${hasStudentId}) - this is a parent/student alert`);
         return;
       }
       
-      // If alert type is clearly a parent/student alert type, skip it
       const parentStudentAlertTypes = [
         'schedule_permission_request', 'schedule_permission_response',
         'attendance_scan', 'link_request', 'link_response',
@@ -178,17 +160,13 @@ const sendPushForAlert = async (alert, role, userId) => {
       ];
       const isParentStudentType = parentStudentAlertTypes.some(t => alertType.toLowerCase().includes(t.toLowerCase()));
       
-      if (isParentStudentType && !isAdminOnlyType) {
+      if (isParentStudentType) {
         console.log(`⏭️ [${role}] SKIP - alert type "${alertType}" is a parent/student alert type, not an admin alert`);
         return;
       }
-      
-      console.log(`✅ [${role}] Alert is verified as admin alert (type: ${alertType})`);
     }
     
-    // Login status already verified above - no need to check again
-    
-    // CRITICAL STEP 4: Verify alert belongs to this user
+    // CRITICAL STEP 5: Verify alert belongs to this user
     if (role === 'student') {
       const alertStudentId = alert.studentId || alert.student_id;
       if (alertStudentId) {
@@ -196,11 +174,8 @@ const sendPushForAlert = async (alert, role, userId) => {
         const normalizedUserId = String(userId).replace(/-/g, '').trim().toLowerCase();
         if (normalizedAlertStudentId !== normalizedUserId) {
           console.log(`⏭️ [${role}] SKIP - alert studentId (${alertStudentId}) doesn't match userId (${userId})`);
-          return; // Alert doesn't belong to this user
+          return;
         }
-        console.log(`✅ [${role}] Alert studentId matches userId: ${alertStudentId} === ${userId}`);
-      } else {
-        console.log(`⚠️ [${role}] Alert has no studentId, assuming it belongs to document owner ${userId}`);
       }
     } else if (role === 'parent') {
       const alertParentId = alert.parentId || alert.parent_id;
@@ -209,27 +184,23 @@ const sendPushForAlert = async (alert, role, userId) => {
         const normalizedUserId = String(userId).replace(/-/g, '').trim().toLowerCase();
         if (normalizedAlertParentId !== normalizedUserId) {
           console.log(`⏭️ [${role}] SKIP - alert parentId (${alertParentId}) doesn't match userId (${userId})`);
-          return; // Alert doesn't belong to this user
+          return;
         }
-        console.log(`✅ [${role}] Alert parentId matches userId: ${alertParentId} === ${userId}`);
-      } else {
-        console.log(`⚠️ [${role}] Alert has no parentId, assuming it belongs to document owner ${userId}`);
       }
       
       // CRITICAL: For parent alerts, MUST verify active link to student
-      // This ensures alerts are only sent to parents who are actually linked to the student
       const alertStudentId = alert.studentId || alert.student_id;
       if (!alertStudentId) {
         console.log(`⏭️ [${role}] SKIP - parent alert has no studentId (cannot verify link)`);
-        return; // No studentId in alert - cannot verify link
+        return;
       }
       
-      // Try multiple queries to find the link (handle both UID and canonical ID formats)
+      // Try to find active link
       let linkFound = false;
-      let linkDocument = null; // Store the link document to get FCM tokens
+      let linkDocument = null;
       const parentIdNumber = userData?.parentId || userData?.parentIdNumber || userId;
       
-      // Query 1: By parent UID and studentId (UID)
+      // Query by parent UID and studentId
       try {
         const linkQuery1 = await firestore.collection('parent_student_links')
           .where('parentId', '==', userData.uid)
@@ -240,96 +211,44 @@ const sendPushForAlert = async (alert, role, userId) => {
         
         if (!linkQuery1.empty) {
           linkFound = true;
-          linkDocument = linkQuery1.docs[0]; // Store link document
-          console.log(`✅ [${role}] Link found: parent ${userId} (${userData.uid}) linked to student ${alertStudentId} via parentId+studentId`);
+          linkDocument = linkQuery1.docs[0];
         }
       } catch (e) {
-        console.log(`⚠️ [${role}] Error querying link by parentId+studentId:`, e.message);
+        // Continue to next query
       }
       
-      // Query 2: By parentIdNumber (canonical) and studentId
+      // Query by canonical IDs if needed
       if (!linkFound && parentIdNumber && parentIdNumber !== userData.uid) {
         try {
           const linkQuery2 = await firestore.collection('parent_student_links')
             .where('parentIdNumber', '==', String(parentIdNumber))
-            .where('studentId', '==', String(alertStudentId))
+            .where('studentIdNumber', '==', String(alertStudentId))
             .where('status', '==', 'active')
             .limit(1)
             .get();
           
           if (!linkQuery2.empty) {
             linkFound = true;
-            linkDocument = linkQuery2.docs[0]; // Store link document
-            console.log(`✅ [${role}] Link found: parent ${userId} (${parentIdNumber}) linked to student ${alertStudentId} via parentIdNumber+studentId`);
+            linkDocument = linkQuery2.docs[0];
           }
         } catch (e) {
-          console.log(`⚠️ [${role}] Error querying link by parentIdNumber+studentId:`, e.message);
-        }
-      }
-      
-      // Query 3: By parentIdNumber and studentIdNumber (canonical IDs)
-      if (!linkFound && parentIdNumber && parentIdNumber !== userData.uid) {
-        try {
-          const linkQuery3 = await firestore.collection('parent_student_links')
-            .where('parentIdNumber', '==', String(parentIdNumber))
-            .where('studentIdNumber', '==', String(alertStudentId))
-            .where('status', '==', 'active')
-            .limit(1)
-            .get();
-          
-          if (!linkQuery3.empty) {
-            linkFound = true;
-            linkDocument = linkQuery3.docs[0]; // Store link document
-            console.log(`✅ [${role}] Link found: parent ${userId} (${parentIdNumber}) linked to student ${alertStudentId} via canonical IDs`);
-          }
-        } catch (e) {
-          console.log(`⚠️ [${role}] Error querying link by canonical IDs:`, e.message);
-        }
-      }
-      
-      // Query 4: By parent UID and studentIdNumber
-      if (!linkFound) {
-        try {
-          const linkQuery4 = await firestore.collection('parent_student_links')
-            .where('parentId', '==', userData.uid)
-            .where('studentIdNumber', '==', String(alertStudentId))
-            .where('status', '==', 'active')
-            .limit(1)
-            .get();
-          
-          if (!linkQuery4.empty) {
-            linkFound = true;
-            linkDocument = linkQuery4.docs[0]; // Store link document
-            console.log(`✅ [${role}] Link found: parent ${userId} (${userData.uid}) linked to student ${alertStudentId} via parentId+studentIdNumber`);
-          }
-        } catch (e) {
-          console.log(`⚠️ [${role}] Error querying link by parentId+studentIdNumber:`, e.message);
+          // Continue
         }
       }
       
       if (!linkFound) {
-        console.log(`⏭️ [${role}] SKIP - parent ${userId} (${userData.uid}) is NOT actively linked to student ${alertStudentId}`);
-        return; // Not linked - do not send notification
+        console.log(`⏭️ [${role}] SKIP - parent ${userId} is NOT actively linked to student ${alertStudentId}`);
+        return;
       }
       
-      console.log(`✅ [${role}] VERIFIED: Parent ${userId} (${userData.uid}) is actively linked to student ${alertStudentId}`);
-      
-      // For attendance_scan alerts, use FCM token from parent_student_links if available
-      // BUT STILL VERIFY USER IS LOGGED IN - we already checked above, so this is safe
+      // For attendance_scan alerts, use FCM token from link if available
       if (linkDocument && (alert.type === 'attendance_scan' || alert.alertType === 'attendance_scan')) {
         const linkData = linkDocument.data();
         const linkParentFcmToken = linkData?.parentFcmToken || null;
         
-        // CRITICAL: Only use link token if user is still logged in (we already verified this above)
-        // Double-check that userData still shows they're logged in
-        if (linkParentFcmToken && userData?.fcmToken && userData?.lastLoginAt) {
-          // Use FCM token from parent_student_links for attendance scans
+        if (linkParentFcmToken && userData.fcmToken) {
           const title = alert.title || 'New Alert';
           const body = alert.message || alert.body || 'You have a new alert';
-          
-          console.log(`✅ ALL VALIDATIONS PASSED - Sending push to ${role} ${userId} using FCM token from parent_student_links`);
-          console.log(`   User: ${userData.uid}, Role: ${userData.role}, Using link token: ${!!linkParentFcmToken}`);
-          console.log(`   User is verified logged in: role=${!!userData.role}, uid=${!!userData.uid}, fcmToken=${!!userData.fcmToken}, lastLoginAt=${!!userData.lastLoginAt}`);
           
           await pushService.sendPush(
             linkParentFcmToken,
@@ -342,84 +261,32 @@ const sendPushForAlert = async (alert, role, userId) => {
               studentId: alert.studentId || '',
               parentId: alert.parentId || '',
               status: alert.status || 'unread',
+              userUid: userData.uid,
+              userEmail: userData.email,
+              userFirstName: userData.firstName,
+              userLastName: userData.lastName,
               ...alert
             }
           );
           
-          // Mark as notified
           notifiedAlerts.set(deduplicationKey, Date.now());
           console.log(`✅✅✅ PUSH SENT to ${role} ${userId} (${userData.uid}) using link token - ${title}`);
-          return; // Exit early - notification sent using link token
-        } else {
-          if (!linkParentFcmToken) {
-            console.log(`⚠️ [${role}] No FCM token in parent_student_links, falling back to users collection token`);
-          } else {
-            console.log(`⚠️ [${role}] User not verified logged in (missing: role=${!!userData?.role}, uid=${!!userData?.uid}, fcmToken=${!!userData?.fcmToken}, lastLoginAt=${!!userData?.lastLoginAt}), falling back to users collection token`);
-          }
-          // Fall through to use userData.fcmToken (which will be validated below)
+          return;
         }
       }
     }
     
-    // ALL VALIDATIONS PASSED - Send notification using FCM token from users collection
-    // This is for non-attendance_scan alerts OR if link token is not available
+    // ALL VALIDATIONS PASSED - Send notification
     const title = alert.title || 'New Alert';
     const body = alert.message || alert.body || 'You have a new alert';
     
-    // CRITICAL: Use verifyUserIdentity to get complete user info and ensure we're sending to the right person
-    // This verifies: firstName, lastName, uid, studentId/parentId, email, fcmToken, login recency
-    const expectedData = {
-      uid: alert.uid || null,
-      email: alert.email || null,
-      studentId: role === 'student' ? (alert.studentId || alert.student_id || null) : null,
-      parentId: role === 'parent' ? (alert.parentId || alert.parent_id || null) : null
-    };
-    
-    const verification = await verifyUserIdentity(userId, role, expectedData);
-    
-    if (!verification.valid) {
-      console.log(`⏭️ [${role}] SKIP - User identity verification failed: ${verification.error}`);
-      return;
-    }
-    
-    const userInfo = verification.userData;
-    
-    // Additional verification: Ensure alert belongs to this specific user
-    if (role === 'student') {
-      // For students, verify studentId matches
-      const alertStudentId = alert.studentId || alert.student_id;
-      if (alertStudentId && userInfo.studentId) {
-        const normalizedAlert = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
-        const normalizedUser = String(userInfo.studentId).replace(/-/g, '').trim().toLowerCase();
-        if (normalizedAlert !== normalizedUser) {
-          console.log(`⏭️ [${role}] SKIP - alert studentId (${alertStudentId}) doesn't match user studentId (${userInfo.studentId})`);
-          return; // Alert doesn't belong to this user
-        }
-      }
-    } else if (role === 'parent') {
-      // For parents, verify parentId matches (already verified link above, but double-check)
-      const alertParentId = alert.parentId || alert.parent_id;
-      if (alertParentId && userInfo.parentId) {
-        const normalizedAlert = String(alertParentId).replace(/-/g, '').trim().toLowerCase();
-        const normalizedUser = String(userInfo.parentId).replace(/-/g, '').trim().toLowerCase();
-        if (normalizedAlert !== normalizedUser && alertParentId !== userInfo.uid) {
-          console.log(`⏭️ [${role}] SKIP - alert parentId (${alertParentId}) doesn't match user parentId (${userInfo.parentId})`);
-          return; // Alert doesn't belong to this user
-        }
-      }
-    }
-    
-    console.log(`✅ ALL VALIDATIONS PASSED - Sending push to ${role} ${userId}`);
-    console.log(`   User Info: uid=${userInfo.uid}, firstName=${userInfo.firstName}, lastName=${userInfo.lastName}, email=${userInfo.email}`);
-    console.log(`   HasToken: ${!!userInfo.fcmToken}`);
-    
-    if (!userInfo.fcmToken) {
+    if (!userData.fcmToken) {
       console.log(`⏭️ [${role}] SKIP - user ${userId} has no FCM token`);
       return;
     }
     
     await pushService.sendPush(
-      userInfo.fcmToken,
+      userData.fcmToken,
       title,
       body,
       {
@@ -429,22 +296,19 @@ const sendPushForAlert = async (alert, role, userId) => {
         studentId: alert.studentId || '',
         parentId: alert.parentId || '',
         status: alert.status || 'unread',
-        // Include verified user identity in data
-        userUid: userInfo.uid,
-        userEmail: userInfo.email,
-        userFirstName: userInfo.firstName,
-        userLastName: userInfo.lastName,
+        userUid: userData.uid,
+        userEmail: userData.email,
+        userFirstName: userData.firstName,
+        userLastName: userData.lastName,
         ...alert
       }
     );
     
-    // Mark as notified
     notifiedAlerts.set(deduplicationKey, Date.now());
     console.log(`✅✅✅ PUSH SENT to ${role} ${userId} (${userData.uid}) - ${title}`);
     
   } catch (error) {
     console.error(`❌ Push failed for ${role} ${userId}:`, error.message);
-    // Don't throw - just log and continue
   }
 };
 
@@ -456,14 +320,13 @@ const initializeStudentAlertsListener = () => {
     alertListeners.studentCollection();
   }
   
-  let previousStudentAlerts = new Map(); // studentId -> Set of alert IDs
+  let previousStudentAlerts = new Map();
   let isInitialSnapshot = true;
-  const listenerStartTime = Date.now(); // Track when listener started
+  const listenerStartTime = Date.now();
   
   const studentAlertsCollection = firestore.collection('student_alerts');
   
   alertListeners.studentCollection = studentAlertsCollection.onSnapshot(async (snapshot) => {
-    // Ignore initial snapshot
     if (isInitialSnapshot) {
       snapshot.docs.forEach(doc => {
         const studentId = doc.id;
@@ -476,30 +339,35 @@ const initializeStudentAlertsListener = () => {
       return;
     }
     
-    // Process changes - ONLY send to the document owner
-    // CRITICAL: Process each change sequentially to avoid race conditions
     for (const change of snapshot.docChanges()) {
       if (change.type === 'added' || change.type === 'modified') {
-        const studentId = change.doc.id; // Document ID = studentId
+        const studentId = change.doc.id;
         console.log(`📋 [LISTENER] Processing ${change.type} for student document: ${studentId}`);
+        
         const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
         const previousAlertIds = previousStudentAlerts.get(studentId) || new Set();
-        const currentAlertIds = new Set();
         
-        // Find new unread alerts that:
-        // 1. Are not in previous set (actually new)
-        // 2. Were created AFTER listener started (not old alerts)
+        // Find new unread alerts
         const newAlerts = items.filter(item => {
           const alertId = item.id || item.alertId;
           if (item.status !== 'unread' || !alertId || previousAlertIds.has(alertId)) {
-            return false; // Skip if read, no ID, or already seen
+            return false;
           }
           
-          // CRITICAL: Check if alert was created AFTER listener started
+          // Extract timestamp
           let alertTime = null;
           try {
-            // Try to extract timestamp from alert ID
-            if (typeof alertId === 'string' && alertId.includes('_')) {
+            if (item.createdAt) {
+              if (typeof item.createdAt === 'string') {
+                alertTime = new Date(item.createdAt).getTime();
+              } else if (item.createdAt.toMillis) {
+                alertTime = item.createdAt.toMillis();
+              } else if (item.createdAt.seconds) {
+                alertTime = item.createdAt.seconds * 1000;
+              }
+            }
+            
+            if (!alertTime && typeof alertId === 'string' && alertId.includes('_')) {
               const parts = alertId.split('_');
               for (const part of parts) {
                 const num = parseInt(part, 10);
@@ -509,126 +377,56 @@ const initializeStudentAlertsListener = () => {
                 }
               }
             }
-            
-            // If no timestamp in ID, try createdAt
-            if (!alertTime && item.createdAt) {
-              if (typeof item.createdAt === 'string') {
-                alertTime = new Date(item.createdAt).getTime();
-              } else if (item.createdAt.toMillis) {
-                alertTime = item.createdAt.toMillis();
-              } else if (item.createdAt.seconds) {
-                alertTime = item.createdAt.seconds * 1000;
-              }
-            }
           } catch (e) {
-            // Ignore parsing errors
+            // Ignore
           }
           
-          // Only send if alert was created AFTER listener started
           if (alertTime && alertTime > listenerStartTime) {
-            currentAlertIds.add(alertId);
             return true;
-          } else if (!alertTime) {
-            console.log(`⏭️ Skipping alert ${alertId} - cannot determine creation time`);
-            return false;
-          } else {
-            console.log(`⏭️ Skipping alert ${alertId} - created before listener started`);
-            return false;
           }
+          return false;
         });
         
-        // Update previous set with ALL current alert IDs
         const allCurrentAlertIds = new Set(items.map(item => item.id || item.alertId).filter(Boolean));
         previousStudentAlerts.set(studentId, allCurrentAlertIds);
         
-        // CRITICAL: Only send to this specific student (document ID)
-        // Verify alert belongs to this student AND user is logged in before sending
+        // CRITICAL: Process each alert with strict validation
         for (const alert of newAlerts) {
-          // CRITICAL: Verify alert's studentId matches document ID
+          // CRITICAL: Verify alert's studentId matches document ID FIRST
           const alertStudentId = alert.studentId || alert.student_id;
           if (alertStudentId) {
             const normalizedAlertStudentId = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
             const normalizedStudentId = String(studentId).replace(/-/g, '').trim().toLowerCase();
             if (normalizedAlertStudentId !== normalizedStudentId) {
-              console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - studentId (${alertStudentId}) doesn't match document ID (${studentId})`);
-              continue; // Alert doesn't belong to this student
+              console.log(`⏭️ [LISTENER] SKIP - alert studentId (${alertStudentId}) doesn't match document ID (${studentId})`);
+              continue;
             }
           } else {
-            // If no studentId, set it to match document ID
             alert.studentId = studentId;
           }
           
-          // CRITICAL: Verify user exists and is FULLY logged in BEFORE calling sendPushForAlert
-          // Check login status FIRST - reject immediately if not logged in
+          // CRITICAL: Verify user exists and is logged in BEFORE calling sendPushForAlert
           const userDocCheck = await firestore.collection('users').doc(studentId).get();
           if (!userDocCheck.exists) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${studentId} does not exist`);
+            console.log(`⏭️ [LISTENER] SKIP - user document ${studentId} does not exist`);
             continue;
           }
           
           const userDataCheck = userDocCheck.data();
           
-          // CRITICAL: Check login status FIRST - reject if not logged in
-          if (!userDataCheck?.role) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (no role)`);
-            continue;
-          }
-          
-          if (!userDataCheck?.uid) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT AUTHENTICATED (no uid)`);
-            continue;
-          }
-          
-          if (!userDataCheck?.fcmToken) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT REGISTERED (no fcmToken)`);
-            continue;
-          }
-          
-          // Check login timestamp exists - if missing, user has NEVER logged in
-          const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
-          if (!lastLoginAtCheck) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NEVER LOGGED IN (no timestamp)`);
-            continue;
-          }
-          
-          // Check login timestamp is recent (within 30 days) - reject if not logged in recently
-          let loginTimestampMsCheck = null;
-          try {
-            if (typeof lastLoginAtCheck === 'string') {
-              loginTimestampMsCheck = new Date(lastLoginAtCheck).getTime();
-            } else if (lastLoginAtCheck.toMillis) {
-              loginTimestampMsCheck = lastLoginAtCheck.toMillis();
-            } else if (lastLoginAtCheck.seconds) {
-              loginTimestampMsCheck = lastLoginAtCheck.seconds * 1000;
-            } else if (typeof lastLoginAtCheck === 'number') {
-              loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
-            }
-          } catch (e) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} has invalid login timestamp format`);
-            continue;
-          }
-          
-          if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (invalid timestamp)`);
-            continue;
-          }
-          
-          const nowCheck = Date.now();
-          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-          const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
-          
-          if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
+          // CRITICAL: Check login status FIRST
+          if (!isUserLoggedIn(userDataCheck)) {
+            console.log(`⏭️ [LISTENER] SKIP - user ${studentId} is NOT LOGGED IN or INACTIVE`);
             continue;
           }
           
           // Role must match
           if (String(userDataCheck.role).toLowerCase() !== 'student') {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${studentId} role (${userDataCheck.role}) is not student`);
+            console.log(`⏭️ [LISTENER] SKIP - user ${studentId} role (${userDataCheck.role}) is not student`);
             continue;
           }
           
-          console.log(`✅ [LISTENER] User ${studentId} VERIFIED LOGGED IN - proceeding to sendPushForAlert`);
+          console.log(`✅ [LISTENER] User ${studentId} VERIFIED - proceeding to sendPushForAlert`);
           await sendPushForAlert(alert, 'student', studentId);
         }
       }
@@ -648,14 +446,13 @@ const initializeParentAlertsListener = () => {
     alertListeners.parentCollection();
   }
   
-  let previousParentAlerts = new Map(); // parentId -> Set of alert IDs
+  let previousParentAlerts = new Map();
   let isInitialParentSnapshot = true;
-  const listenerStartTime = Date.now(); // Track when listener started
+  const listenerStartTime = Date.now();
   
   const parentAlertsCollection = firestore.collection('parent_alerts');
   
   alertListeners.parentCollection = parentAlertsCollection.onSnapshot(async (snapshot) => {
-    // Ignore initial snapshot
     if (isInitialParentSnapshot) {
       snapshot.docs.forEach(doc => {
         const parentId = doc.id;
@@ -668,30 +465,24 @@ const initializeParentAlertsListener = () => {
       return;
     }
     
-    // Process changes - ONLY send to the document owner
-    // CRITICAL: Process each change sequentially to avoid race conditions
     for (const change of snapshot.docChanges()) {
       if (change.type === 'added' || change.type === 'modified') {
-        const parentId = change.doc.id; // Document ID = parentId
+        const parentId = change.doc.id;
         console.log(`📋 [LISTENER] Processing ${change.type} for parent document: ${parentId}`);
+        
         const items = Array.isArray(change.doc.data()?.items) ? change.doc.data().items : [];
         const previousAlertIds = previousParentAlerts.get(parentId) || new Set();
-        const currentAlertIds = new Set();
         
-        // Find new unread alerts that:
-        // 1. Are not in previous set (actually new)
-        // 2. Were created AFTER listener started (not old alerts)
+        // Find new unread alerts
         const newAlerts = items.filter(item => {
           const alertId = item.id || item.alertId;
           if (item.status !== 'unread' || !alertId || previousAlertIds.has(alertId)) {
-            return false; // Skip if read, no ID, or already seen
+            return false;
           }
           
-          // CRITICAL: Check if alert was created AFTER listener started
-          // Extract timestamp from alert ID or use createdAt
+          // Extract timestamp
           let alertTime = null;
           try {
-            // Try createdAt FIRST (most reliable)
             if (item.createdAt) {
               if (typeof item.createdAt === 'string') {
                 alertTime = new Date(item.createdAt).getTime();
@@ -702,131 +493,66 @@ const initializeParentAlertsListener = () => {
               }
             }
             
-            // If no createdAt, try to extract timestamp from alert ID (format: prefix_timestamp_random or sched_studentId_type_timestamp_random)
             if (!alertTime && typeof alertId === 'string' && alertId.includes('_')) {
               const parts = alertId.split('_');
-              // Look for numeric timestamp in the ID (must be > 1000000000000 for milliseconds)
               for (const part of parts) {
                 const num = parseInt(part, 10);
-                if (!isNaN(num) && num > 1000000000000) { // Valid timestamp (milliseconds)
+                if (!isNaN(num) && num > 1000000000000) {
                   alertTime = num;
                   break;
                 }
               }
             }
           } catch (e) {
-            console.log(`⚠️ [LISTENER] Error parsing alert time for ${alertId}:`, e.message);
+            // Ignore
           }
           
-          // Only send if alert was created AFTER listener started
           if (alertTime && alertTime > listenerStartTime) {
-            currentAlertIds.add(alertId);
-            return true; // This is a new alert created after listener started
-          } else if (!alertTime) {
-            // If we can't determine time, be conservative and skip
-            console.log(`⏭️ Skipping alert ${alertId} - cannot determine creation time`);
-            return false;
-          } else {
-            // Alert is old (created before listener started)
-            console.log(`⏭️ Skipping alert ${alertId} - created before listener started (${new Date(alertTime).toISOString()} < ${new Date(listenerStartTime).toISOString()})`);
-            return false;
+            return true;
           }
+          return false;
         });
         
-        // Update previous set with ALL current alert IDs (not just new ones)
         const allCurrentAlertIds = new Set(items.map(item => item.id || item.alertId).filter(Boolean));
         previousParentAlerts.set(parentId, allCurrentAlertIds);
         
-        // CRITICAL: Only send to this specific parent (document ID)
-        // Verify alert belongs to this parent AND user is logged in before sending
+        // CRITICAL: Process each alert with strict validation
         for (const alert of newAlerts) {
-          // CRITICAL: Verify alert's parentId matches document ID
+          // CRITICAL: Verify alert's parentId matches document ID FIRST
           const alertParentId = alert.parentId || alert.parent_id;
           if (alertParentId) {
             const normalizedAlertParentId = String(alertParentId).replace(/-/g, '').trim().toLowerCase();
             const normalizedParentId = String(parentId).replace(/-/g, '').trim().toLowerCase();
             if (normalizedAlertParentId !== normalizedParentId) {
-              console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - parentId (${alertParentId}) doesn't match document ID (${parentId})`);
-              continue; // Alert doesn't belong to this parent
+              console.log(`⏭️ [LISTENER] SKIP - alert parentId (${alertParentId}) doesn't match document ID (${parentId})`);
+              continue;
             }
           } else {
-            // If no parentId, set it to match document ID
             alert.parentId = parentId;
           }
           
-          // CRITICAL: Verify user exists and is FULLY logged in BEFORE calling sendPushForAlert
-          // Check login status FIRST - reject immediately if not logged in
+          // CRITICAL: Verify user exists and is logged in BEFORE calling sendPushForAlert
           const userDocCheck = await firestore.collection('users').doc(parentId).get();
           if (!userDocCheck.exists) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user document ${parentId} does not exist`);
+            console.log(`⏭️ [LISTENER] SKIP - user document ${parentId} does not exist`);
             continue;
           }
           
           const userDataCheck = userDocCheck.data();
           
-          // CRITICAL: Check login status FIRST - reject if not logged in
-          if (!userDataCheck?.role) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (no role)`);
-            continue;
-          }
-          
-          if (!userDataCheck?.uid) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT AUTHENTICATED (no uid)`);
-            continue;
-          }
-          
-          if (!userDataCheck?.fcmToken) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT REGISTERED (no fcmToken)`);
-            continue;
-          }
-          
-          // Check login timestamp exists - if missing, user has NEVER logged in
-          const lastLoginAtCheck = userDataCheck?.lastLoginAt || userDataCheck?.pushTokenUpdatedAt;
-          if (!lastLoginAtCheck) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NEVER LOGGED IN (no timestamp)`);
-            continue;
-          }
-          
-          // Check login timestamp is recent (within 30 days) - reject if not logged in recently
-          let loginTimestampMsCheck = null;
-          try {
-            if (typeof lastLoginAtCheck === 'string') {
-              loginTimestampMsCheck = new Date(lastLoginAtCheck).getTime();
-            } else if (lastLoginAtCheck.toMillis) {
-              loginTimestampMsCheck = lastLoginAtCheck.toMillis();
-            } else if (lastLoginAtCheck.seconds) {
-              loginTimestampMsCheck = lastLoginAtCheck.seconds * 1000;
-            } else if (typeof lastLoginAtCheck === 'number') {
-              loginTimestampMsCheck = lastLoginAtCheck > 1000000000000 ? lastLoginAtCheck : lastLoginAtCheck * 1000;
-            }
-          } catch (e) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} has invalid login timestamp format`);
-            continue;
-          }
-          
-          if (!loginTimestampMsCheck || isNaN(loginTimestampMsCheck)) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (invalid timestamp)`);
-            continue;
-          }
-          
-          const nowCheck = Date.now();
-          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-          const timeSinceLoginCheck = nowCheck - loginTimestampMsCheck;
-          
-          if (timeSinceLoginCheck > THIRTY_DAYS_MS) {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} NOT LOGGED IN (last login: ${Math.floor(timeSinceLoginCheck / (24 * 60 * 60 * 1000))} days ago, more than 30 days)`);
+          // CRITICAL: Check login status FIRST
+          if (!isUserLoggedIn(userDataCheck)) {
+            console.log(`⏭️ [LISTENER] SKIP - user ${parentId} is NOT LOGGED IN or INACTIVE`);
             continue;
           }
           
           // Role must match
           if (String(userDataCheck.role).toLowerCase() !== 'parent') {
-            console.log(`⏭️ [LISTENER] Skipping alert ${alert.id || alert.alertId} - user ${parentId} role (${userDataCheck.role}) is not parent`);
+            console.log(`⏭️ [LISTENER] SKIP - user ${parentId} role (${userDataCheck.role}) is not parent`);
             continue;
           }
           
-          console.log(`✅ [LISTENER] User ${parentId} VERIFIED LOGGED IN - proceeding to sendPushForAlert`);
-          
-          console.log(`📨 [LISTENER] Processing NEW alert for parent ${parentId} (${userDataCheck.uid}): ${alert.id || alert.alertId}`);
+          console.log(`✅ [LISTENER] User ${parentId} VERIFIED - proceeding to sendPushForAlert`);
           await sendPushForAlert(alert, 'parent', parentId);
         }
       }
@@ -854,7 +580,6 @@ const initializeAdminAlertsListener = () => {
   alertListeners.admin = adminAlertsRef.onSnapshot(async (snap) => {
     if (!snap.exists) return;
     
-    // Ignore initial snapshot
     if (isInitialAdminSnapshot) {
       const items = Array.isArray(snap.data()?.items) ? snap.data().items : [];
       items.forEach(item => {
@@ -868,25 +593,23 @@ const initializeAdminAlertsListener = () => {
     const items = Array.isArray(snap.data()?.items) ? snap.data().items : [];
     const currentAlertIds = new Set();
     
-    // Find new unread alerts - CRITICAL: Filter out parent/student alerts that shouldn't be here
+    // Find new unread alerts - CRITICAL: Filter out parent/student alerts
     const newAlerts = items.filter(item => {
       const alertId = item.id || item.alertId;
       if (item.status !== 'unread' || !alertId || previousAdminAlertIds.has(alertId)) {
         return false;
       }
       
-      // CRITICAL: Verify this is actually an admin alert, not a parent/student alert
+      // CRITICAL: Verify this is actually an admin alert
       const alertType = item.type || item.alertType || '';
       const hasParentId = !!(item.parentId || item.parent_id);
       const hasStudentId = !!(item.studentId || item.student_id);
       
-      // If alert has parentId or studentId, it's NOT an admin alert - skip it
       if (hasParentId || hasStudentId) {
-        console.log(`⏭️ [ADMIN LISTENER] Skipping alert ${alertId} - has parentId (${hasParentId}) or studentId (${hasStudentId}) - this is a parent/student alert, not an admin alert`);
+        console.log(`⏭️ [ADMIN LISTENER] SKIP - alert ${alertId} has parentId (${hasParentId}) or studentId (${hasStudentId})`);
         return false;
       }
       
-      // If alert type is clearly a parent/student alert type, skip it
       const parentStudentAlertTypes = [
         'schedule_permission_request', 'schedule_permission_response',
         'attendance_scan', 'link_request', 'link_response',
@@ -895,7 +618,7 @@ const initializeAdminAlertsListener = () => {
       const isParentStudentType = parentStudentAlertTypes.some(t => alertType.toLowerCase().includes(t.toLowerCase()));
       
       if (isParentStudentType) {
-        console.log(`⏭️ [ADMIN LISTENER] Skipping alert ${alertId} - type "${alertType}" is a parent/student alert type, not an admin alert`);
+        console.log(`⏭️ [ADMIN LISTENER] SKIP - alert ${alertId} type "${alertType}" is a parent/student alert type`);
         return false;
       }
       
@@ -905,8 +628,8 @@ const initializeAdminAlertsListener = () => {
     
     previousAdminAlertIds = currentAlertIds;
     
-    // Get all logged-in admin users
     if (newAlerts.length > 0) {
+      // Get all logged-in admin users
       const adminUsersSnapshot = await firestore.collection('users')
         .where('role', '==', 'admin')
         .get();
@@ -915,103 +638,33 @@ const initializeAdminAlertsListener = () => {
       
       adminUsersSnapshot.forEach(doc => {
         const userData = doc.data();
-        // Must be logged in: has role, UID, FCM token, and login timestamp
-        if (userData?.role === 'admin' && 
-            userData?.uid && 
-            userData?.fcmToken &&
-            (userData?.lastLoginAt || userData?.pushTokenUpdatedAt)) {
-          
-          // CRITICAL: Check login recency (within 30 days)
-          const lastLoginAt = userData?.lastLoginAt || userData?.pushTokenUpdatedAt;
-          let loginTimestampMs = null;
-          try {
-            if (typeof lastLoginAt === 'string') {
-              loginTimestampMs = new Date(lastLoginAt).getTime();
-            } else if (lastLoginAt?.toMillis) {
-              loginTimestampMs = lastLoginAt.toMillis();
-            } else if (lastLoginAt?.seconds) {
-              loginTimestampMs = lastLoginAt.seconds * 1000;
-            } else if (typeof lastLoginAt === 'number') {
-              loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
-            }
-          } catch (e) {
-            // Skip this admin if we can't parse timestamp
-            return;
-          }
-          
-          if (!loginTimestampMs || isNaN(loginTimestampMs)) {
-            return; // Skip this admin
-          }
-          
-          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-          const timeSinceLogin = Date.now() - loginTimestampMs;
-          
-          if (timeSinceLogin > THIRTY_DAYS_MS) {
-            console.log(`⏭️ [ADMIN LISTENER] Skipping admin ${doc.id} - last logged in ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
-            return; // Skip inactive admins
-          }
-          
-          // Use document ID if it's 'Admin', otherwise use uid
+        if (isUserLoggedIn(userData) && userData.role === 'admin') {
           const adminUserId = doc.id === 'Admin' ? 'Admin' : (userData.uid || doc.id);
           adminUserIds.push(adminUserId);
         }
       });
       
-      // Also check 'Admin' document
+      // Check 'Admin' document
       const adminDoc = await firestore.collection('users').doc('Admin').get();
       if (adminDoc.exists) {
         const adminData = adminDoc.data();
-        if (adminData?.role === 'admin' && 
-            adminData?.uid && 
-            adminData?.fcmToken &&
-            (adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt)) {
-          
-          // Check login recency
-          const lastLoginAt = adminData?.lastLoginAt || adminData?.pushTokenUpdatedAt;
-          let loginTimestampMs = null;
-          try {
-            if (typeof lastLoginAt === 'string') {
-              loginTimestampMs = new Date(lastLoginAt).getTime();
-            } else if (lastLoginAt?.toMillis) {
-              loginTimestampMs = lastLoginAt.toMillis();
-            } else if (lastLoginAt?.seconds) {
-              loginTimestampMs = lastLoginAt.seconds * 1000;
-            } else if (typeof lastLoginAt === 'number') {
-              loginTimestampMs = lastLoginAt > 1000000000000 ? lastLoginAt : lastLoginAt * 1000;
-            }
-          } catch (e) {
-            // Skip if can't parse
-          }
-          
-          if (loginTimestampMs && !isNaN(loginTimestampMs)) {
-            const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-            const timeSinceLogin = Date.now() - loginTimestampMs;
-            
-            if (timeSinceLogin <= THIRTY_DAYS_MS) {
-              if (!adminUserIds.includes('Admin')) {
-                adminUserIds.push('Admin');
-              }
-            } else {
-              console.log(`⏭️ [ADMIN LISTENER] Skipping Admin document - last logged in ${Math.floor(timeSinceLogin / (24 * 60 * 60 * 1000))} days ago (more than 30 days)`);
-            }
+        if (isUserLoggedIn(adminData) && adminData.role === 'admin') {
+          if (!adminUserIds.includes('Admin')) {
+            adminUserIds.push('Admin');
           }
         }
       }
       
-      // CRITICAL: Send to each admin individually with full validation
-      // sendPushForAlert will verify:
-      // 1. Admin user is logged in (within 30 days)
-      // 2. Alert is actually an admin alert (no parentId/studentId)
-      // 3. Alert type is admin-specific (not parent/student alert type)
+      // Send to each admin individually
       for (const alert of newAlerts) {
-        // Double-check alert is admin-only before sending to any admin
+        // Double-check alert is admin-only
         const alertType = alert.type || alert.alertType || '';
         const hasParentId = !!(alert.parentId || alert.parent_id);
         const hasStudentId = !!(alert.studentId || alert.student_id);
         
         if (hasParentId || hasStudentId) {
-          console.log(`⏭️ [ADMIN LISTENER] CRITICAL: Skipping alert ${alert.id || alert.alertId} - has parentId (${hasParentId}) or studentId (${hasStudentId}) - this should NEVER be sent to admins`);
-          continue; // Skip this alert entirely - don't send to any admin
+          console.log(`⏭️ [ADMIN LISTENER] CRITICAL: Skipping alert ${alert.id || alert.alertId} - has parentId/studentId`);
+          continue;
         }
         
         const parentStudentAlertTypes = [
@@ -1022,13 +675,11 @@ const initializeAdminAlertsListener = () => {
         const isParentStudentType = parentStudentAlertTypes.some(t => alertType.toLowerCase().includes(t.toLowerCase()));
         
         if (isParentStudentType) {
-          console.log(`⏭️ [ADMIN LISTENER] CRITICAL: Skipping alert ${alert.id || alert.alertId} - type "${alertType}" is a parent/student alert type - this should NEVER be sent to admins`);
-          continue; // Skip this alert entirely - don't send to any admin
+          console.log(`⏭️ [ADMIN LISTENER] CRITICAL: Skipping alert ${alert.id || alert.alertId} - type "${alertType}" is parent/student type`);
+          continue;
         }
         
-        // Only send to verified logged-in admins
         for (const adminUserId of adminUserIds) {
-          // sendPushForAlert will do additional validation, but we've already filtered here
           await sendPushForAlert(alert, 'admin', adminUserId);
         }
       }
@@ -1065,7 +716,7 @@ setInterval(() => {
       notifiedAlerts.delete(key);
     }
   }
-}, 10 * 60 * 1000); // Every 10 minutes
+}, 10 * 60 * 1000);
 
 /**
  * Cleanup all listeners
