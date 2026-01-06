@@ -437,29 +437,177 @@ const initializeStudentAlertsListener = () => {
             alert.studentId = studentId;
           }
           
-          // CRITICAL: Verify user exists and is logged in BEFORE calling sendPushForAlert
-          const userDocCheck = await firestore.collection('users').doc(studentId).get();
-          if (!userDocCheck.exists) {
-            console.log(`⏭️ [LISTENER] SKIP - user document ${studentId} does not exist`);
+          // CRITICAL: Verify student document exists
+          const studentDocCheck = await firestore.collection('users').doc(studentId).get();
+          if (!studentDocCheck.exists) {
+            console.log(`⏭️ [LISTENER] SKIP - student document ${studentId} does not exist`);
             continue;
           }
           
-          const userDataCheck = userDocCheck.data();
+          const studentDataCheck = studentDocCheck.data();
           
-          // CRITICAL: Check login status FIRST
-          if (!isUserLoggedIn(userDataCheck)) {
-            console.log(`⏭️ [LISTENER] SKIP - user ${studentId} is NOT LOGGED IN or INACTIVE`);
+          // Role must be student
+          if (String(studentDataCheck.role).toLowerCase() !== 'student') {
+            console.log(`⏭️ [LISTENER] SKIP - user ${studentId} role (${studentDataCheck.role}) is not student`);
             continue;
           }
           
-          // Role must match
-          if (String(userDataCheck.role).toLowerCase() !== 'student') {
-            console.log(`⏭️ [LISTENER] SKIP - user ${studentId} role (${userDataCheck.role}) is not student`);
+          console.log(`✅ [LISTENER] Student ${studentId} VERIFIED - finding linked parents`);
+          
+          // Find all active parent-student links for this student
+          const linkedParents = [];
+          
+          // Query 1: By studentId (UID)
+          try {
+            const linksQuery1 = await firestore.collection('parent_student_links')
+              .where('studentId', '==', String(studentId))
+              .where('status', '==', 'active')
+              .get();
+            
+            linksQuery1.docs.forEach(doc => {
+              const linkData = doc.data();
+              // parentIdNumber is canonical ID (e.g., "9759-68433"), parentId is UID
+              const parentId = linkData.parentIdNumber || linkData.parentId;
+              const parentUid = linkData.parentId;
+              if (parentId) {
+                linkedParents.push({
+                  parentId: parentId,
+                  parentUid: parentUid,
+                  linkDoc: doc,
+                  linkData: linkData
+                });
+              }
+            });
+          } catch (e) {
+            console.error(`❌ Error querying parent_student_links by studentId:`, e.message);
+          }
+          
+          // Query 2: By studentIdNumber (canonical ID)
+          try {
+            const studentIdNumber = studentDataCheck.studentId || studentId;
+            const linksQuery2 = await firestore.collection('parent_student_links')
+              .where('studentIdNumber', '==', String(studentIdNumber))
+              .where('status', '==', 'active')
+              .get();
+            
+            linksQuery2.docs.forEach(doc => {
+              const linkData = doc.data();
+              // parentIdNumber is canonical ID (e.g., "9759-68433"), parentId is UID
+              const parentId = linkData.parentIdNumber || linkData.parentId;
+              const parentUid = linkData.parentId;
+              if (parentId) {
+                // Avoid duplicates
+                const exists = linkedParents.some(p => 
+                  (p.parentId === parentId) || (p.parentUid === parentUid)
+                );
+                if (!exists) {
+                  linkedParents.push({
+                    parentId: parentId,
+                    parentUid: parentUid,
+                    linkDoc: doc,
+                    linkData: linkData
+                  });
+                }
+              }
+            });
+          } catch (e) {
+            console.error(`❌ Error querying parent_student_links by studentIdNumber:`, e.message);
+          }
+          
+          if (linkedParents.length === 0) {
+            console.log(`⏭️ [LISTENER] SKIP - no active parent links found for student ${studentId}`);
             continue;
           }
           
-          console.log(`✅ [LISTENER] User ${studentId} VERIFIED - proceeding to sendPushForAlert`);
-          await sendPushForAlert(alert, 'student', studentId);
+          console.log(`📋 [LISTENER] Found ${linkedParents.length} linked parent(s) for student ${studentId}`);
+          
+          // Send push notification to each linked parent
+          for (const parentLink of linkedParents) {
+            const parentId = parentLink.parentId;
+            const parentUid = parentLink.parentUid;
+            
+            // Try to get parent document by parentId (canonical ID)
+            let parentDoc = await firestore.collection('users').doc(parentId).get();
+            
+            // If not found and we have parentUid, try by UID
+            if (!parentDoc.exists && parentUid) {
+              const parentQuery = await firestore.collection('users')
+                .where('uid', '==', parentUid)
+                .limit(1)
+                .get();
+              if (!parentQuery.empty) {
+                parentDoc = parentQuery.docs[0];
+              }
+            }
+            
+            if (!parentDoc.exists) {
+              console.log(`⏭️ [LISTENER] SKIP - parent document ${parentId} does not exist`);
+              continue;
+            }
+            
+            const parentData = parentDoc.data();
+            
+            // CRITICAL: Check login status FIRST
+            if (!isUserLoggedIn(parentData)) {
+              console.log(`⏭️ [LISTENER] SKIP - parent ${parentId} is NOT LOGGED IN or INACTIVE`);
+              continue;
+            }
+            
+            // Role must be parent
+            if (String(parentData.role).toLowerCase() !== 'parent') {
+              console.log(`⏭️ [LISTENER] SKIP - user ${parentId} role (${parentData.role}) is not parent`);
+              continue;
+            }
+            
+            console.log(`✅ [LISTENER] Parent ${parentId} VERIFIED - sending push notification`);
+            
+            // Use FCM token from link if available, otherwise use parent's FCM token
+            const fcmTokenToUse = parentLink.linkData?.parentFcmToken || parentData.fcmToken;
+            
+            if (!fcmTokenToUse) {
+              console.log(`⏭️ [LISTENER] SKIP - parent ${parentId} has no FCM token`);
+              continue;
+            }
+            
+            // Send push notification directly to parent
+            try {
+              const alertId = alert.id || alert.alertId || `${studentId}_${Date.now()}`;
+              const deduplicationKey = `${alertId}_${parentId}`;
+              
+              // Check if we've already notified about this alert
+              if (notifiedAlerts.has(deduplicationKey)) {
+                console.log(`⏭️ [LISTENER] SKIP - already notified parent ${parentId} about alert ${alertId}`);
+                continue;
+              }
+              
+              const title = alert.title || 'New Student Alert';
+              const body = alert.message || alert.body || 'Your student has a new alert';
+              
+              await pushService.sendPush(
+                fcmTokenToUse,
+                title,
+                body,
+                {
+                  type: 'alert',
+                  alertId: alertId,
+                  alertType: alert.type || alert.alertType || 'student_alert',
+                  studentId: studentId,
+                  parentId: parentId,
+                  status: alert.status || 'unread',
+                  userUid: parentData.uid,
+                  userEmail: parentData.email,
+                  userFirstName: parentData.firstName,
+                  userLastName: parentData.lastName,
+                  ...alert
+                }
+              );
+              
+              notifiedAlerts.set(deduplicationKey, Date.now());
+              console.log(`✅✅✅ PUSH SENT to parent ${parentId} (${parentData.uid}) - ${title}`);
+            } catch (pushError) {
+              console.error(`❌ Push failed for parent ${parentId}:`, pushError.message);
+            }
+          }
         }
       }
     }
