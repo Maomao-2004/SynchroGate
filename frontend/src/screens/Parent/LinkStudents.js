@@ -47,7 +47,6 @@ const SAFE_BOTTOM_BUFFER = 8; // extra cushion for safe-area (smaller gap)
 const GRID_ROW_GAP = 12; // slightly increased vertical gap between rows
 const GRID_HEIGHT = Math.max(220, height - GRID_CONTENT_TOP - NAV_TAB_BUFFER - SAFE_BOTTOM_BUFFER);
 const CARD_HEIGHT = 260; // taller cards to accommodate view details button
-const MAX_LINKED_STUDENTS = 4;
 
 function LinkStudents() {
   const navigation = useNavigation();
@@ -79,7 +78,6 @@ function LinkStudents() {
   const [linkStudentConfirmVisible, setLinkStudentConfirmVisible] = useState(false);
   const [selectedStudentForLink, setSelectedStudentForLink] = useState(null);
   const [linkingStudent, setLinkingStudent] = useState(false);
-  const [linkedElsewhereMap, setLinkedElsewhereMap] = useState({});
   const [pendingReqMap, setPendingReqMap] = useState({});
   const [selfPendingMap, setSelfPendingMap] = useState({});
   const [cancelRequestConfirmVisible, setCancelRequestConfirmVisible] = useState(false);
@@ -91,7 +89,6 @@ function LinkStudents() {
   const [networkErrorMessage, setNetworkErrorMessage] = useState('');
   const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
   const [refreshCounter, setRefreshCounter] = useState(0);
-  const hasReachedLinkLimit = useMemo(() => Array.isArray(linkedStudents) && linkedStudents.length >= MAX_LINKED_STUDENTS, [linkedStudents]);
   
   // Force re-render when link-related state changes
   const triggerRefresh = useCallback(() => {
@@ -248,8 +245,7 @@ function LinkStudents() {
               const map = new Map((prev || []).map(s => [s.id, s]));
               items1.forEach(s => map.set(s.id, s));
               const newList = Array.from(map.values());
-              // Force immediate UI update
-              setTimeout(() => triggerRefresh(), 0);
+              // State update will trigger re-render automatically
               return newList;
             });
           },
@@ -274,8 +270,7 @@ function LinkStudents() {
                 const map = new Map((prev || []).map(s => [s.id, s]));
                 items2.forEach(s => map.set(s.id, s));
                 const newList = Array.from(map.values());
-                // Force immediate UI update
-                setTimeout(() => triggerRefresh(), 0);
+                // State update will trigger re-render automatically
                 return newList;
               });
             },
@@ -495,8 +490,7 @@ function LinkStudents() {
           setPendingReqMap(pendingByStudent);
           setSelfPendingMap(outgoingByStudent);
           setRequestedStudents(outgoingList);
-          // Force immediate UI update
-          setTimeout(() => triggerRefresh(), 0);
+          // State update will trigger re-render automatically
         } catch {}
       },
       (error) => {
@@ -513,20 +507,9 @@ function LinkStudents() {
     return () => { try { unsub(); } catch {} };
   }, [user?.uid]);
   
-  // Trigger refresh when linkedStudents changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [linkedStudents, triggerRefresh]);
-  
-  // Trigger refresh when pendingReqMap changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [pendingReqMap, triggerRefresh]);
-  
-  // Trigger refresh when linkedElsewhereMap changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [linkedElsewhereMap, triggerRefresh]);
+  // Remove triggerRefresh from dependencies to prevent infinite loops
+  // The refreshCounter is already updated via triggerRefresh calls in state setters
+  // No need to trigger refresh on every state change
 
   const handleStudentNameInput = (text) => setSearchStudentName(text);
   const exitSearchMode = () => { setIsSearching(false); setSearchStudentName(''); };
@@ -542,35 +525,71 @@ function LinkStudents() {
   };
 
   // Open student info modal, fetching by uid or by canonical studentId when necessary
-  const openStudentInfo = async (student) => { 
+  const openStudentInfo = (student) => { 
+    // Show modal immediately with available data for instant UI response
     setStudentInfoData(student); 
     setStudentInfoVisible(true); 
-    // If this is a linked student, resolve full data
-    try {
-      const looksLikeUid = student?.uid && !String(student.uid).includes('-');
-      let snap = null;
-      if (looksLikeUid) {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('uid', '==', String(student.uid)));
-        snap = await getDocs(q);
-      }
-      if (!snap || snap.empty) {
-        const sid = String(student?.studentId || student?.id || '').trim();
-        if (sid) {
-          const usersRef = collection(db, 'users');
-          const q = query(usersRef, where('studentId', '==', sid));
-          snap = await getDocs(q);
+    setStudentInfoLoading(true);
+    
+    // Fetch full data asynchronously without blocking UI
+    // Use setTimeout to defer heavy operations and allow UI to render first
+    setTimeout(async () => {
+      try {
+        const studentUid = String(student?.uid || '').trim();
+        const studentId = String(student?.studentId || student?.id || '').trim();
+        const looksLikeUid = studentUid && !studentUid.includes('-');
+        
+        // Run all queries in parallel for better performance
+        const queries = [];
+        
+        // Query 1: Try by UID
+        if (looksLikeUid) {
+          queries.push(
+            getDocs(query(collection(db, 'users'), where('uid', '==', studentUid), where('role', '==', 'student')))
+          );
         }
-      }
-      if (snap && !snap.empty) {
-        const data = snap.docs[0].data();
-        setStudentInfoData({
-          ...student,
-          uid: data.uid || student.uid,
-          firstName: data.firstName || student.firstName,
-          lastName: data.lastName || student.lastName || '',
-          studentId: data.studentId || student.studentId || student.id,
-          course: data.course || '',
+        
+        // Query 2: Try by document ID (studentId)
+        if (studentId) {
+          queries.push(
+            getDoc(doc(db, 'users', studentId)).catch(() => null)
+          );
+        }
+        
+        // Query 3: Try by studentId field
+        if (studentId) {
+          queries.push(
+            getDocs(query(collection(db, 'users'), where('studentId', '==', studentId), where('role', '==', 'student')))
+          );
+        }
+        
+        // Execute all queries in parallel
+        const results = await Promise.all(queries);
+        
+        // Find the first successful result
+        let snap = null;
+        for (const result of results) {
+          if (!result) continue;
+          if (result.exists && result.exists()) {
+            // It's a DocumentSnapshot
+            snap = { docs: [result], empty: false };
+            break;
+          } else if (result.docs && result.docs.length > 0) {
+            // It's a QuerySnapshot
+            snap = result;
+            break;
+          }
+        }
+        
+        if (snap && !snap.empty) {
+          const data = snap.docs[0].data();
+          setStudentInfoData({
+            ...student,
+            uid: data.uid || student.uid,
+            firstName: data.firstName || student.firstName,
+            lastName: data.lastName || student.lastName || '',
+            studentId: data.studentId || student.studentId || student.id,
+            course: data.course || '',
             section: data.section || '',
             yearLevel: data.yearLevel || '',
             contactNumber: data.contactNumber || '',
@@ -579,30 +598,23 @@ function LinkStudents() {
             address: data.address || ''
           });
         }
-    } catch (error) {
-      console.error('Error opening student info:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
+      } catch (error) {
+        console.error('Error opening student info:', error);
+        // Only show network error modal for actual network errors
+        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
+          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
+          setNetworkErrorTitle(errorInfo.title);
+          setNetworkErrorMessage(errorInfo.message);
+          setNetworkErrorColor(errorInfo.color);
+          setNetworkErrorVisible(true);
+          setTimeout(() => setNetworkErrorVisible(false), 5000);
+        }
+      } finally {
+        setStudentInfoLoading(false);
       }
-    }
+    }, 0);
   };
 
-  // Check if student is already linked to any parent (active)
-  const ensureLinkedElsewhere = async (studentUid) => {
-    try {
-      if (!studentUid) return;
-      if (linkedElsewhereMap[studentUid] !== undefined) return;
-      const qRef = query(collection(db, 'parent_student_links'), where('studentId', '==', studentUid), where('status', '==', 'active'));
-      const snap = await getDocs(qRef);
-      setLinkedElsewhereMap(prev => ({ ...prev, [studentUid]: !snap.empty }));
-    } catch {}
-  };
 
   // Check if there is an existing pending link request (parent -> student)
   const ensurePendingRequest = async (studentUid) => {
@@ -669,17 +681,6 @@ function LinkStudents() {
       const studentCanonicalId = String(studentData?.studentId || studentData?.studentID || studentData?.studentIdNumber || studentUid).trim();
       if (!studentUid || !parentUid) {
         Alert.alert('Error', 'Missing required information.');
-        return;
-      }
-      if (hasReachedLinkLimit) {
-        setFeedbackSuccess(false);
-        setFeedbackTitle('Error');
-        setFeedbackMessage(`You can link up to ${MAX_LINKED_STUDENTS} students.`);
-        setFeedbackVisible(true);
-        setTimeout(() => {
-          setFeedbackVisible(false);
-          resetToNormalState();
-        }, 3000);
         return;
       }
       
@@ -1271,7 +1272,11 @@ function LinkStudents() {
                       data={results}
                       keyExtractor={(item) => item.uid || item.id}
                       extraData={refreshCounter}
-                      removeClippedSubviews={false}
+                      removeClippedSubviews={true}
+                      maxToRenderPerBatch={10}
+                      updateCellsBatchingPeriod={50}
+                      initialNumToRender={10}
+                      windowSize={10}
                       renderItem={({ item: student }) => {
                       const matchKeys = [
                         String(student.uid || '').trim(),
@@ -1288,19 +1293,17 @@ function LinkStudents() {
                         const pStudentId = String(p.studentId || '').trim();
                         return matchKeys.some((key) => key && (key === pid || key === pStudentId));
                       });
-                      // Lazy-check if linked to any parent
-                      if (!isLinked && !isRequestedLocal) {
-                        const primaryKey = matchKeys[0];
-                        if (primaryKey && linkedElsewhereMap[primaryKey] === undefined) {
-                          ensureLinkedElsewhere(primaryKey);
-                        }
-                      }
-                      // Lazy-check if a pending request exists in links
-                      if (!isLinked && matchKeys.every((key) => pendingReqMap[key] === undefined)) { ensurePendingRequest(student.uid); }
+                      // Check pending request status - use existing map, don't trigger async calls during render
                       const isRequested = !!isRequestedLocal || matchKeys.some((key) => pendingReqMap[key]);
-                      const linkedElsewhere = matchKeys.some((key) => linkedElsewhereMap[key]);
+                      // Lazy-check if a pending request exists (defer to avoid blocking render)
+                      if (!isLinked && matchKeys.every((key) => pendingReqMap[key] === undefined) && !isRequestedLocal) {
+                        // Defer the check to avoid blocking UI
+                        setTimeout(() => {
+                          ensurePendingRequest(student.uid).catch(() => {});
+                        }, 100);
+                      }
                       let badgeView = null;
-                      // Badge priority: Linked > Sent > Max > N/A > Link
+                      // Badge priority: Linked > Sent > Link
                       if (isLinked) {
                         badgeView = (
                           <View style={styles.badgeLinkedBlue}><Text style={styles.badgeLinkedBlueText}>Linked</Text></View>
@@ -1308,14 +1311,6 @@ function LinkStudents() {
                       } else if (isRequested) {
                         badgeView = (
                           <View style={styles.requestedBadge}><Text style={styles.requestedBadgeText}>Sent</Text></View>
-                        );
-                      } else if (hasReachedLinkLimit) {
-                        badgeView = (
-                          <View style={styles.badgeNARed}><Text style={styles.badgeNARedText}>Max</Text></View>
-                        );
-                      } else if (linkedElsewhere) {
-                        badgeView = (
-                          <View style={styles.badgeNARed}><Text style={styles.badgeNARedText}>N/A</Text></View>
                         );
                       } else {
                         badgeView = (
@@ -1333,32 +1328,23 @@ function LinkStudents() {
                               onPress={() => {
                                 if (isLinked) {
                                   // Navigate to StudentProfile for linked students
+                                  // Pass all available student data plus linkId
+                                  const studentData = {
+                                    ...student, // Include all fields from search result
+                                    id: student.uid || student.id || student.studentId,
+                                    uid: student.uid || student.id,
+                                    studentId: student.studentId || student.studentIdNumber,
+                                    linkId: isLinked.linkId || isLinked.id
+                                  };
+                                  
                                   const homeStack = navigation.getParent?.();
                                   if (homeStack) {
                                     homeStack.navigate('Home', { 
                                       screen: 'StudentProfile', 
-                                      params: { 
-                                        student: {
-                                          id: student.uid || student.id,
-                                          uid: student.uid || student.id,
-                                          firstName: student.firstName,
-                                          lastName: student.lastName,
-                                          studentId: student.studentId,
-                                          linkId: isLinked.linkId
-                                        }
-                                      } 
+                                      params: { student: studentData }
                                     });
                                   } else {
-                                    navigation.navigate('StudentProfile', { 
-                                      student: {
-                                        id: student.uid || student.id,
-                                        uid: student.uid || student.id,
-                                        firstName: student.firstName,
-                                        lastName: student.lastName,
-                                        studentId: student.studentId,
-                                        linkId: isLinked.linkId
-                                      }
-                                    });
+                                    navigation.navigate('StudentProfile', { student: studentData });
                                   }
                                 } else {
                                   // Open modal for non-linked students
@@ -1425,8 +1411,8 @@ function LinkStudents() {
                           <Ionicons name="people-outline" size={20} color="#2563EB" />
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.infoTitle}>Student Connection Limit</Text>
-                          <Text style={styles.infoSub}>You can link up to 4 students to your account at a time.</Text>
+                          <Text style={styles.infoTitle}>Linked Students</Text>
+                          <Text style={styles.infoSub}>Students linked to your account.</Text>
                         </View>
                       </View>
                     </View>
@@ -1468,32 +1454,23 @@ function LinkStudents() {
                       <TouchableOpacity 
                         style={styles.viewDetailsButton}
                         onPress={() => {
+                          // Pass all available student data
+                          const studentData = {
+                            ...item, // Include all fields from linked student
+                            id: item.id || item.uid,
+                            uid: item.uid || item.id,
+                            studentId: item.studentId || item.studentIdNumber,
+                            linkId: item.linkId
+                          };
+                          
                           const homeStack = navigation.getParent?.();
                           if (homeStack) {
                             homeStack.navigate('Home', { 
                               screen: 'StudentProfile', 
-                              params: { 
-                                student: {
-                                  id: item.id,
-                                  uid: item.id,
-                                  firstName: item.firstName,
-                                  lastName: item.lastName,
-                                  studentId: item.studentId,
-                                  linkId: item.linkId
-                                }
-                              } 
+                              params: { student: studentData }
                             });
                           } else {
-                            navigation.navigate('StudentProfile', { 
-                              student: {
-                                id: item.id,
-                                uid: item.id,
-                                firstName: item.firstName,
-                                lastName: item.lastName,
-                                studentId: item.studentId,
-                                linkId: item.linkId
-                              }
-                            });
+                            navigation.navigate('StudentProfile', { student: studentData });
                           }
                         }}
                       >
@@ -1669,7 +1646,6 @@ function LinkStudents() {
                   return (sid && (sid === puid || sid === pStuId)) || (sidNum && (sidNum === puid || sidNum === pStuId));
                 });
                 const isRequested = requestedStudents.find(s => s.id === studentInfoData?.uid) || pendingReqMap[studentInfoData?.uid];
-                const linkedElsewhere = !!linkedElsewhereMap[studentInfoData?.uid];
 
                 // If not linked, always hide details. Show the info-unavailable card unconditionally when not linked.
                 if (!isLinkedFull) {
@@ -1772,14 +1748,6 @@ function LinkStudents() {
                   const hasPending = matchKeys.some((key) => key && pendingReqMap?.[key]);
                   const hasOwnPending = matchKeys.some((key) => key && selfPendingMap?.[key]);
                   const isRequested = hasPending;
-                  const linkedElsewhere = matchKeys.some((key) => linkedElsewhereMap[key]);
-
-                  if (!isLinkedFull && !isRequested) {
-                    const primaryKey = matchKeys[0];
-                    if (primaryKey && linkedElsewhereMap[primaryKey] === undefined) {
-                      ensureLinkedElsewhere(primaryKey);
-                    }
-                  }
 
                   if (isLinkedFull) {
                     return (
@@ -1804,19 +1772,7 @@ function LinkStudents() {
                         </TouchableOpacity>
                       </>
                     );
-                  } else if (linkedElsewhere) {
-                    return (
-                      <>
-                        <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
-                          <Text style={styles.modernCloseButtonText}>Close</Text>
-                        </TouchableOpacity>
-                        <View style={styles.modernDisabledButton}>
-                          <Ionicons name="close-circle" size={14} color="#94A3B8" />
-                          <Text style={styles.modernDisabledButtonText}>N/A</Text>
-                        </View>
-                      </>
-                    );
-                  } else if (!isRequested && !hasReachedLinkLimit) {
+                  } else if (!isRequested) {
                     return (
                       <>
                         <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
@@ -1834,18 +1790,6 @@ function LinkStudents() {
                           <Ionicons name="link" size={14} color="#FFFFFF" />
                           <Text style={styles.modernLinkButtonText}>Link</Text>
                         </TouchableOpacity>
-                      </>
-                    );
-                  } else if (!isRequested && hasReachedLinkLimit) {
-                    return (
-                      <>
-                        <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
-                          <Text style={styles.modernCloseButtonText}>Close</Text>
-                        </TouchableOpacity>
-                        <View style={styles.modernDisabledButton}>
-                          <Ionicons name="alert" size={14} color="#94A3B8" />
-                          <Text style={styles.modernDisabledButtonText}>Max Reached</Text>
-                        </View>
                       </>
                     );
                   } else if (hasOwnPending) {
@@ -2120,8 +2064,6 @@ const styles = StyleSheet.create({
   badgeLinkedBlueText: { color: '#2563EB', fontSize: 10, fontWeight: '600' },
   badgeLinkGreen: { backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#A7F3D0' },
   badgeLinkGreenText: { color: '#10B981', fontSize: 10, fontWeight: '600' },
-  badgeNARed: { backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#FECACA' },
-  badgeNARedText: { color: '#DC2626', fontSize: 10, fontWeight: '600' },
   linkPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EFF6FF', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: '#DBEAFE' },
   linkPillText: { color: '#2563EB', fontWeight: '700', fontSize: 12 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },

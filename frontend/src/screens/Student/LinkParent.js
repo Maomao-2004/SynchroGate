@@ -48,7 +48,6 @@ const SAFE_BOTTOM_BUFFER = 8; // extra cushion for safe-area (smaller gap)
 const GRID_ROW_GAP = 12; // slightly increased vertical gap between rows
 const GRID_HEIGHT = Math.max(220, height - GRID_CONTENT_TOP - NAV_TAB_BUFFER - SAFE_BOTTOM_BUFFER);
 const CARD_HEIGHT = 260; // taller cards to accommodate view details button
-const MAX_LINKED_PARENTS = 1; // Students can only link 1 parent
 
 function LinkStudents() {
   const navigation = useNavigation();
@@ -94,7 +93,6 @@ function LinkStudents() {
   const [linkStudentConfirmVisible, setLinkStudentConfirmVisible] = useState(false);
   const [selectedStudentForLink, setSelectedStudentForLink] = useState(null);
   const [linkingStudent, setLinkingStudent] = useState(false);
-  const [linkedElsewhereMap, setLinkedElsewhereMap] = useState({});
   const [pendingReqMap, setPendingReqMap] = useState({});
   const [selfPendingMap, setSelfPendingMap] = useState({});
   const [cancelRequestConfirmVisible, setCancelRequestConfirmVisible] = useState(false);
@@ -102,7 +100,6 @@ function LinkStudents() {
   const [cancelingRequest, setCancelingRequest] = useState(false);
   const [headerSearchShowing, setHeaderSearchShowing] = useState(false);
   const [refreshCounter, setRefreshCounter] = useState(0);
-  const hasReachedLinkLimit = useMemo(() => Array.isArray(linkedStudents) && linkedStudents.length >= MAX_LINKED_PARENTS, [linkedStudents]);
   
   // Force re-render when link-related state changes
   const triggerRefresh = useCallback(() => {
@@ -356,30 +353,7 @@ function LinkStudents() {
             items1.forEach(p => map.set(p.id, p));
             const newList = Array.from(map.values());
             
-            // Clear linkedElsewhereMap cache for parents that are no longer linked
-            // This ensures search results update in real-time when parents unlink
-            const currentParentIds = new Set(newList.map(p => p.id));
-            const currentParentCanonicalIds = new Set(newList.map(p => p.studentId).filter(Boolean));
-            const prevParentIds = new Set(prevList.map(p => p.id));
-            const prevParentCanonicalIds = new Set(prevList.map(p => p.studentId).filter(Boolean));
-            
-            // Find parents that were removed
-            const removedIds = [...prevParentIds].filter(id => !currentParentIds.has(id));
-            const removedCanonicalIds = [...prevParentCanonicalIds].filter(id => !currentParentCanonicalIds.has(id));
-            
-            if (removedIds.length > 0 || removedCanonicalIds.length > 0) {
-              setLinkedElsewhereMap(prevMap => {
-                const updated = { ...prevMap };
-                // Remove cache entries for unlinked parents
-                [...removedIds, ...removedCanonicalIds].forEach(key => {
-                  if (key) delete updated[key];
-                });
-                return updated;
-              });
-            }
-            
-            // Force immediate UI update
-            setTimeout(() => triggerRefresh(), 0);
+            // State update will trigger re-render automatically, no need for manual refresh
             return newList;
           });
         });
@@ -393,29 +367,7 @@ function LinkStudents() {
               items2.forEach(p => map.set(p.id, p));
               const newList = Array.from(map.values());
               
-              // Clear linkedElsewhereMap cache for parents that are no longer linked
-              const currentParentIds = new Set(newList.map(p => p.id));
-              const currentParentCanonicalIds = new Set(newList.map(p => p.studentId).filter(Boolean));
-              const prevParentIds = new Set(prevList.map(p => p.id));
-              const prevParentCanonicalIds = new Set(prevList.map(p => p.studentId).filter(Boolean));
-              
-              // Find parents that were removed
-              const removedIds = [...prevParentIds].filter(id => !currentParentIds.has(id));
-              const removedCanonicalIds = [...prevParentCanonicalIds].filter(id => !currentParentCanonicalIds.has(id));
-              
-              if (removedIds.length > 0 || removedCanonicalIds.length > 0) {
-                setLinkedElsewhereMap(prevMap => {
-                  const updated = { ...prevMap };
-                  // Remove cache entries for unlinked parents
-                  [...removedIds, ...removedCanonicalIds].forEach(key => {
-                    if (key) delete updated[key];
-                  });
-                  return updated;
-                });
-              }
-              
-              // Force immediate UI update
-              setTimeout(() => triggerRefresh(), 0);
+              // State update will trigger re-render automatically, no need for manual refresh
               return newList;
             });
           });
@@ -426,60 +378,8 @@ function LinkStudents() {
     return () => { try { unsub1 && unsub1(); } catch {} try { unsub2 && unsub2(); } catch {} };
   }, [user?.uid]);
 
-  // Clear linkedElsewhereMap cache when linkedStudents changes
-  // This ensures search results update in real-time when parents unlink
-  const prevLinkedStudentsRef = useRef([]);
-  useEffect(() => {
-    if (!Array.isArray(linkedStudents)) {
-      prevLinkedStudentsRef.current = [];
-      return;
-    }
-    
-    const prevList = prevLinkedStudentsRef.current || [];
-    const currentList = linkedStudents || [];
-    
-    // Find parent IDs that were in the previous list but are no longer linked
-    const prevParentIds = new Set(prevList.map(p => [p.id, p.studentId, p.uid]).flat().filter(Boolean));
-    const currentParentIds = new Set(currentList.map(p => [p.id, p.studentId, p.uid]).flat().filter(Boolean));
-    
-    const removedParentIds = [...prevParentIds].filter(id => !currentParentIds.has(id));
-    
-    // Clear cache entries for parents that were unlinked
-    if (removedParentIds.length > 0) {
-      setLinkedElsewhereMap(prevMap => {
-        const updated = { ...prevMap };
-        let hasChanges = false;
-        removedParentIds.forEach(key => {
-          if (key && updated[key] !== undefined) {
-            delete updated[key];
-            hasChanges = true;
-          }
-        });
-        return hasChanges ? updated : prevMap;
-      });
-    }
-    
-    // Update ref for next comparison
-    prevLinkedStudentsRef.current = currentList;
-    
-    // Trigger refresh to update UI
-    triggerRefresh();
-  }, [linkedStudents]);
-  
-  // Trigger refresh when pendingReqMap changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [pendingReqMap]);
-  
-  // Trigger refresh when linkedElsewhereMap changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [linkedElsewhereMap]);
-  
-  // Trigger refresh when requestedStudents changes
-  useEffect(() => {
-    triggerRefresh();
-  }, [requestedStudents]);
+  // Removed useEffect hooks that triggered refresh on state changes
+  // State updates will trigger re-renders automatically, no need for manual refresh triggers
 
   const refreshScreen = () => { if (user?.uid) { loadLinkedStudents(); setIsSearching(false); setSearchParentName(''); } };
   const resetToNormalState = () => {
@@ -548,79 +448,12 @@ function LinkStudents() {
     }
   }, [isSearching]);
 
-  // Real-time listener for all parent_student_links to update linkedElsewhereMap
-  // This ensures search result badges update in real-time when any link status changes
-  // Note: ensureLinkedElsewhere checks if studentId matches the key, so we need to check
-  // if any parent UID appears as a studentId in active links (meaning they're linked)
-  useEffect(() => {
-    if (!isSearching || allParents.length === 0) return;
-    
-    // Watch ALL active parent_student_links to update linkedElsewhereMap
-    const qAllLinks = query(
-      collection(db, 'parent_student_links'),
-      where('status', '==', 'active')
-    );
-    
-    const unsub = onSnapshot(qAllLinks, async (snap) => {
-      try {
-        // Build a set of all studentIds that are linked (these are the keys used in linkedElsewhereMap)
-        const linkedStudentIds = new Set();
-        snap.docs.forEach((d) => {
-          const data = d.data() || {};
-          const studentUid = String(data.studentId || '').trim();
-          const studentCanonical = String(data.studentIdNumber || '').trim();
-          if (studentUid) linkedStudentIds.add(studentUid);
-          if (studentCanonical) linkedStudentIds.add(studentCanonical);
-        });
-        
-        // Update linkedElsewhereMap: for each parent in search results, check if their UID
-        // appears as a studentId in any active link (meaning they're linked as a student)
-        setLinkedElsewhereMap(prevMap => {
-          const updated = { ...prevMap };
-          let hasChanges = false;
-          
-          // Update map for all parents in search results
-          allParents.forEach(parent => {
-            const parentUid = String(parent.uid || parent.id || '').trim();
-            const parentCanonical = String(parent.parentId || parent.studentId || '').trim();
-            const parentKeys = [parentUid, parentCanonical].filter(Boolean);
-            
-            parentKeys.forEach(key => {
-              if (!key) return;
-              
-              // Check if this parent's UID appears as a studentId in any active link
-              const isLinked = linkedStudentIds.has(key);
-              
-              // Only update if the value actually changed
-              if (updated[key] !== isLinked) {
-                if (isLinked) {
-                  updated[key] = true;
-                } else {
-                  // Only delete if it was previously true (to avoid unnecessary updates)
-                  if (updated[key] === true) {
-                    delete updated[key];
-                  }
-                }
-                hasChanges = true;
-              }
-            });
-          });
-          
-          return hasChanges ? updated : prevMap;
-        });
-        // Force immediate UI update
-        setTimeout(() => triggerRefresh(), 0);
-      } catch {}
-    });
-    
-    return () => { try { unsub(); } catch {} };
-  }, [isSearching, allParents]);
 
   // Comprehensive real-time listener for ALL parent_student_links involving this student
   // This ensures all link statuses update in real-time across the entire screen
   useEffect(() => {
     if (!user?.uid) return;
-    let unsub1 = null, unsub2 = null, unsub3 = null, unsub4 = null;
+    let unsub1 = null, unsub2 = null;
     
     const attach = async () => {
       try {
@@ -692,8 +525,7 @@ function LinkStudents() {
               return updated;
             });
             setRequestedStudents(outgoingList);
-            // Force immediate UI update
-            setTimeout(() => triggerRefresh(), 0);
+            // State update will trigger re-render automatically
       } catch {}
     });
         
@@ -765,86 +597,11 @@ function LinkStudents() {
                 const newItems = outgoingList.filter(p => !existingIds.has(p.id));
                 return [...prev, ...newItems];
               });
-              // Force immediate UI update
-              setTimeout(() => triggerRefresh(), 0);
+              // State update will trigger re-render automatically
             } catch {}
           });
         }
         
-        // Listener 3: ALL active links by studentId (UID) - for linkedElsewhereMap updates
-        const qActive1 = query(
-          collection(db, 'parent_student_links'),
-          where('studentId', '==', studentUid),
-          where('status', '==', 'active')
-        );
-        unsub3 = onSnapshot(qActive1, (snap) => {
-          try {
-            // Update linkedElsewhereMap: clear entries for parents that are no longer linked
-            const activeParentIds = new Set();
-            snap.docs.forEach((d) => {
-              const data = d.data() || {};
-              const parentUid = String(data.parentId || '').trim();
-              const parentCanonical = String(data.parentIdNumber || '').trim();
-              if (parentUid) activeParentIds.add(parentUid);
-              if (parentCanonical) activeParentIds.add(parentCanonical);
-            });
-            
-            // For search results: check if parents in allParents are linked elsewhere
-            // This will be handled by the ensureLinkedElsewhere function when needed
-            // But we can proactively clear cache for parents not in active links
-            setLinkedElsewhereMap(prevMap => {
-              const updated = { ...prevMap };
-              let hasChanges = false;
-              
-              // Keep only entries that are still active or undefined (will be re-checked)
-              Object.keys(updated).forEach(key => {
-                // If this parent is in active links, keep the entry
-                // If not, clear it so it gets re-checked
-                if (updated[key] === true && !activeParentIds.has(key)) {
-                  delete updated[key];
-                  hasChanges = true;
-                }
-              });
-              
-              return hasChanges ? updated : prevMap;
-            });
-          } catch {}
-        });
-        
-        // Listener 4: ALL active links by studentIdNumber (canonical) - for linkedElsewhereMap updates
-        if (canonicalId && canonicalId.includes('-')) {
-          const qActive2 = query(
-            collection(db, 'parent_student_links'),
-            where('studentIdNumber', '==', canonicalId),
-            where('status', '==', 'active')
-          );
-          unsub4 = onSnapshot(qActive2, (snap) => {
-            try {
-              const activeParentIds = new Set();
-              snap.docs.forEach((d) => {
-                const data = d.data() || {};
-                const parentUid = String(data.parentId || '').trim();
-                const parentCanonical = String(data.parentIdNumber || '').trim();
-                if (parentUid) activeParentIds.add(parentUid);
-                if (parentCanonical) activeParentIds.add(parentCanonical);
-              });
-              
-              setLinkedElsewhereMap(prevMap => {
-                const updated = { ...prevMap };
-                let hasChanges = false;
-                
-                Object.keys(updated).forEach(key => {
-                  if (updated[key] === true && !activeParentIds.has(key)) {
-                    delete updated[key];
-                    hasChanges = true;
-                  }
-                });
-                
-                return hasChanges ? updated : prevMap;
-              });
-            } catch {}
-          });
-        }
       } catch {}
     };
     
@@ -852,8 +609,6 @@ function LinkStudents() {
     return () => {
       try { unsub1 && unsub1(); } catch {}
       try { unsub2 && unsub2(); } catch {}
-      try { unsub3 && unsub3(); } catch {}
-      try { unsub4 && unsub4(); } catch {}
     };
   }, [user?.uid]);
 
@@ -871,73 +626,94 @@ function LinkStudents() {
   };
 
   // Open parent info modal, fetching by uid or by canonical parentId when necessary
-  const openStudentInfo = async (parent) => { 
+  const openStudentInfo = (parent) => { 
+    // Show modal immediately with available data for instant UI response
     setStudentInfoData(parent); 
     setStudentInfoVisible(true); 
     setStudentInfoLoading(true);
-    // If this is a linked parent, resolve full data
-    try {
-      const parentUid = String(parent?.uid || parent?.id || '').trim();
-      const parentCanonicalId = String(parent?.studentId || parent?.parentId || '').trim();
-      let snap = null;
-      
-      // Try to fetch by UID first
-      if (parentUid && !parentUid.includes('-')) {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('uid', '==', parentUid), where('role', '==', 'parent'));
-        snap = await getDocs(q);
-      }
-      
-      // If not found by UID, try by document ID (parentId)
-      if ((!snap || snap.empty) && parentCanonicalId) {
-        try {
-          const parentDoc = await getDoc(doc(db, 'users', parentCanonicalId));
-          if (parentDoc.exists()) {
-            snap = { docs: [parentDoc], empty: false };
+    
+    // Fetch full data asynchronously without blocking UI
+    // Use setTimeout to defer heavy operations and allow UI to render first
+    setTimeout(async () => {
+      try {
+        const parentUid = String(parent?.uid || parent?.id || '').trim();
+        const parentCanonicalId = String(parent?.studentId || parent?.parentId || '').trim();
+        
+        // Run all queries in parallel for better performance
+        const queries = [];
+        
+        // Query 1: Try by UID
+        if (parentUid && !parentUid.includes('-')) {
+          queries.push(
+            getDocs(query(collection(db, 'users'), where('uid', '==', parentUid), where('role', '==', 'parent')))
+          );
+        }
+        
+        // Query 2: Try by document ID (parentId)
+        if (parentCanonicalId) {
+          queries.push(
+            getDoc(doc(db, 'users', parentCanonicalId)).catch(() => null)
+          );
+        }
+        
+        // Query 3: Try by parentId field
+        if (parentCanonicalId) {
+          queries.push(
+            getDocs(query(collection(db, 'users'), where('parentId', '==', parentCanonicalId), where('role', '==', 'parent')))
+          );
+        }
+        
+        // Execute all queries in parallel
+        const results = await Promise.all(queries);
+        
+        // Find the first successful result
+        let snap = null;
+        for (const result of results) {
+          if (!result) continue;
+          if (result.exists && result.exists()) {
+            // It's a DocumentSnapshot
+            snap = { docs: [result], empty: false };
+            break;
+          } else if (result.docs && result.docs.length > 0) {
+            // It's a QuerySnapshot
+            snap = result;
+            break;
           }
-        } catch {}
+        }
+        
+        if (snap && !snap.empty) {
+          const data = snap.docs[0].data();
+          setStudentInfoData({
+            ...parent,
+            uid: data.uid || parent.uid || parent.id,
+            firstName: data.firstName || parent.firstName || '',
+            lastName: data.lastName || parent.lastName || '',
+            studentId: data.parentId || parentCanonicalId || parent.studentId || parent.id,
+            email: data.email || '',
+            contactNumber: data.contactNumber || '',
+            gender: data.gender || '',
+            birthday: data.birthday || '',
+            address: data.address || '',
+            parentId: data.parentId || parentCanonicalId
+          });
+        }
+      } catch (error) {
+        console.log('Error fetching parent data:', error);
+        // Only show network error modal for actual network errors
+        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
+          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
+          setNetworkErrorTitle(errorInfo.title);
+          setNetworkErrorMessage(errorInfo.message);
+          setNetworkErrorColor(errorInfo.color);
+          setNetworkErrorVisible(true);
+          setTimeout(() => setNetworkErrorVisible(false), 5000);
+        }
+      } finally {
+        setStudentInfoLoading(false);
       }
-      
-      // If still not found, try by parentId field
-      if ((!snap || snap.empty) && parentCanonicalId) {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('parentId', '==', parentCanonicalId), where('role', '==', 'parent'));
-        snap = await getDocs(q);
-      }
-      
-      if (snap && !snap.empty) {
-        const data = snap.docs[0].data();
-        setStudentInfoData({
-          ...parent,
-          uid: data.uid || parent.uid || parent.id,
-          firstName: data.firstName || parent.firstName || '',
-          lastName: data.lastName || parent.lastName || '',
-          studentId: data.parentId || parentCanonicalId || parent.studentId || parent.id,
-          email: data.email || '',
-          contactNumber: data.contactNumber || '',
-          gender: data.gender || '',
-          birthday: data.birthday || '',
-          address: data.address || '',
-          parentId: data.parentId || parentCanonicalId
-        });
-      }
-    } catch (error) {
-      console.log('Error fetching parent data:', error);
-    } finally {
-      setStudentInfoLoading(false);
-    }
+    }, 0);
   };
 
-  // Check if student is already linked to any parent (active)
-  const ensureLinkedElsewhere = async (studentUid) => {
-    try {
-      if (!studentUid) return;
-      if (linkedElsewhereMap[studentUid] !== undefined) return;
-      const qRef = query(collection(db, 'parent_student_links'), where('studentId', '==', studentUid), where('status', '==', 'active'));
-      const snap = await getDocs(qRef);
-      setLinkedElsewhereMap(prev => ({ ...prev, [studentUid]: !snap.empty }));
-    } catch {}
-  };
 
   // Check if there is an existing pending link request (parent -> student)
   const ensurePendingRequest = async (studentUid) => {
@@ -1138,18 +914,6 @@ function LinkStudents() {
 
       if (!studentUid || !parentUid) {
         Alert.alert('Error', 'Missing required information.');
-        return;
-      }
-
-      if (hasReachedLinkLimit) {
-        setFeedbackSuccess(false);
-        setFeedbackTitle('Error');
-        setFeedbackMessage(`You can only link 1 parent to your account.`);
-        setFeedbackVisible(true);
-        setTimeout(() => {
-          setFeedbackVisible(false);
-          resetToNormalState();
-        }, 3000);
         return;
       }
       
@@ -1524,21 +1288,6 @@ function LinkStudents() {
         console.log('Unlink notification failed:', notifyErr);
       }
       
-      // Clear cached state for the unlinked parent to ensure badges update in search results
-      const unlinkedParentKeys = [
-        String(unlinkStudentData.id || '').trim(),
-        String(unlinkStudentData.uid || '').trim(),
-        String(unlinkStudentData.studentId || '').trim(),
-        String(unlinkStudentData.parentId || '').trim(),
-      ].filter(Boolean);
-      setLinkedElsewhereMap(prev => {
-        const updated = { ...prev };
-        unlinkedParentKeys.forEach(key => {
-          if (key) delete updated[key];
-        });
-        return updated;
-      });
-      
       // Close confirm and any info modal immediately upon success
       setUnlinkConfirmVisible(false);
       setStudentInfoVisible(false);
@@ -1641,7 +1390,11 @@ function LinkStudents() {
                       data={results}
                       keyExtractor={(item) => item.uid || item.id}
                       extraData={refreshCounter}
-                      removeClippedSubviews={false}
+                      removeClippedSubviews={true}
+                      maxToRenderPerBatch={10}
+                      updateCellsBatchingPeriod={50}
+                      initialNumToRender={10}
+                      windowSize={10}
                       renderItem={({ item: parent }) => {
                       const isLinked = linkedStudents.find(p => {
                         const sid = String(p.id || '').trim();
@@ -1651,12 +1404,15 @@ function LinkStudents() {
                         return (sid && (sid === puid || sid === pParentId)) || (sidNum && (sidNum === puid || sidNum === pParentId));
                       });
                       const isRequestedLocal = requestedStudents.find(p => p.id === parent.uid);
-                      // Lazy-check if linked to any parent
-                      if (!isLinked && !isRequestedLocal && linkedElsewhereMap[parent.uid] === undefined) { ensureLinkedElsewhere(parent.uid); }
-                      // Lazy-check if a pending request exists in links
-                      if (!isLinked && pendingReqMap[parent.uid] === undefined) { ensurePendingRequest(parent.uid); }
+                      // Check pending request status - use existing map, don't trigger async calls during render
                       const isRequested = !!isRequestedLocal || !!pendingReqMap[parent.uid];
-                      const linkedElsewhere = !!linkedElsewhereMap[parent.uid];
+                      // Lazy-check if a pending request exists (defer to avoid blocking render)
+                      if (!isLinked && pendingReqMap[parent.uid] === undefined && !isRequestedLocal) {
+                        // Defer the check to avoid blocking UI
+                        setTimeout(() => {
+                          ensurePendingRequest(parent.uid).catch(() => {});
+                        }, 100);
+                      }
                       let badgeView = null;
                       if (isLinked) {
                         badgeView = (
@@ -1665,14 +1421,6 @@ function LinkStudents() {
                       } else if (isRequested) {
                         badgeView = (
                           <View style={styles.requestedBadge}><Text style={styles.requestedBadgeText}>Sent</Text></View>
-                        );
-                      } else if (linkedElsewhere) {
-                        badgeView = (
-                          <View style={styles.badgeNARed}><Text style={styles.badgeNARedText}>N/A</Text></View>
-                        );
-                      } else if (hasReachedLinkLimit) {
-                        badgeView = (
-                          <View style={styles.badgeNARed}><Text style={styles.badgeNARedText}>Max</Text></View>
                         );
                       } else {
                         badgeView = (
@@ -1703,11 +1451,11 @@ function LinkStudents() {
                                   // Navigate to ParentProfile for linked parents
                                   // Pass complete parent object with all fields, ensuring linkId is included
                                   const parentData = {
-                                    ...parent,
-                                    id: parent.id || parent.uid,
+                                    ...parent, // Include all fields from search result
+                                    id: parent.id || parent.uid || parent.parentId,
                                     uid: parent.uid || parent.id,
                                     parentId: parent.parentId || parent.studentId,
-                                    linkId: isLinked.linkId || isLinked.id
+                                    linkId: isLinked?.linkId || isLinked?.id || parent.linkId
                                   };
                                   
                                   if (homeStack) {
@@ -1777,8 +1525,8 @@ function LinkStudents() {
                           <Ionicons name="people-outline" size={20} color="#2563EB" />
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.infoTitle}>Parent Connection Limit</Text>
-                          <Text style={styles.infoSub}>You can link 1 parent to your account.</Text>
+                          <Text style={styles.infoTitle}>Linked Parents</Text>
+                          <Text style={styles.infoSub}>Parents linked to your account.</Text>
                         </View>
                       </View>
                     </View>
@@ -1822,8 +1570,8 @@ function LinkStudents() {
                         onPress={() => {
                           // Pass complete parent object with all fields
                           const parentData = {
-                            ...item,
-                            id: item.id || item.uid,
+                            ...item, // Include all fields from linked parent
+                            id: item.id || item.uid || item.parentId,
                             uid: item.uid || item.id,
                             parentId: item.parentId || item.studentId,
                             linkId: item.linkId
@@ -1860,8 +1608,8 @@ function LinkStudents() {
                         <Ionicons name="add-circle" size={16} color="#2563EB" style={{ marginLeft: -8, marginTop: -8 }} />
                       </View>
                     </View>
-                    <Text style={styles.emptyTitle}>Link a Parent</Text>
-                    <Text style={styles.emptySubtext}>You haven't linked a parent yet. Search for a parent by name to establish a connection.</Text>
+                    <Text style={styles.emptyTitle}>Link Parents</Text>
+                    <Text style={styles.emptySubtext}>You haven't linked any parents yet. Search for parents by name to establish a connection.</Text>
                     <TouchableOpacity style={styles.primaryButton} onPress={() => {
                       const parentNav = navigation.getParent?.();
                       if (parentNav) {
@@ -1871,7 +1619,7 @@ function LinkStudents() {
                       }
                     }}>
                       <Ionicons name="link" size={16} color="#fff" />
-                      <Text style={styles.primaryButtonText}>Link Parent</Text>
+                      <Text style={styles.primaryButtonText}>Link Parents</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1880,7 +1628,7 @@ function LinkStudents() {
           </View>
         )}
 
-        {/* Link Parent Confirmation Modal (schedule-style) */}
+        {/* Link Parents Confirmation Modal (schedule-style) */}
         <Modal
           transparent
           animationType="fade"
@@ -2076,7 +1824,6 @@ function LinkStudents() {
                   return (sid && (sid === puid || sid === pStuId)) || (sidNum && (sidNum === puid || sidNum === pStuId));
                 });
                 const isRequested = requestedStudents.find(s => s.id === studentInfoData?.uid) || pendingReqMap[studentInfoData?.uid];
-                const linkedElsewhere = !!linkedElsewhereMap[studentInfoData?.uid];
 
                 // If not linked, always hide details. Show the info-unavailable card unconditionally when not linked.
                 if (!isLinkedFull) {
@@ -2167,14 +1914,6 @@ function LinkStudents() {
                   const hasPending = matchKeys.some((key) => key && pendingReqMap?.[key]);
                   const hasOwnPending = matchKeys.some((key) => key && selfPendingMap?.[key]);
                   const isRequested = hasPending;
-                  const linkedElsewhere = matchKeys.some((key) => linkedElsewhereMap[key]);
-
-                  if (!isLinkedFull && !isRequested) {
-                    const primaryKey = matchKeys[0];
-                    if (primaryKey && linkedElsewhereMap[primaryKey] === undefined) {
-                      ensureLinkedElsewhere(primaryKey);
-                    }
-                  }
 
                   if (isLinkedFull) {
                     return (
@@ -2199,19 +1938,7 @@ function LinkStudents() {
                         </TouchableOpacity>
                       </>
                     );
-                  } else if (linkedElsewhere) {
-                    return (
-                      <>
-                        <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
-                          <Text style={styles.modernCloseButtonText}>Close</Text>
-                        </TouchableOpacity>
-                        <View style={styles.modernDisabledButton}>
-                          <Ionicons name="close-circle" size={14} color="#94A3B8" />
-                          <Text style={styles.modernDisabledButtonText}>N/A</Text>
-                        </View>
-                      </>
-                    );
-                  } else if (!isRequested && !hasReachedLinkLimit) {
+                  } else if (!isRequested) {
                     return (
                       <>
                         <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
@@ -2229,18 +1956,6 @@ function LinkStudents() {
                           <Ionicons name="link" size={14} color="#FFFFFF" />
                           <Text style={styles.modernLinkButtonText}>Link</Text>
                         </TouchableOpacity>
-                      </>
-                    );
-                  } else if (!isRequested && hasReachedLinkLimit) {
-                    return (
-                      <>
-                        <TouchableOpacity style={styles.modernCloseButton} onPress={() => { setStudentInfoVisible(false); setStudentInfoData(null); }}>
-                          <Text style={styles.modernCloseButtonText}>Close</Text>
-                        </TouchableOpacity>
-                        <View style={styles.modernDisabledButton}>
-                          <Ionicons name="alert" size={14} color="#94A3B8" />
-                          <Text style={styles.modernDisabledButtonText}>Max Reached</Text>
-                        </View>
                       </>
                     );
                   } else if (hasOwnPending) {
@@ -2464,8 +2179,6 @@ const styles = StyleSheet.create({
   badgeLinkedBlueText: { color: '#2563EB', fontSize: 10, fontWeight: '600' },
   badgeLinkGreen: { backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#A7F3D0' },
   badgeLinkGreenText: { color: '#10B981', fontSize: 10, fontWeight: '600' },
-  badgeNARed: { backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#FECACA' },
-  badgeNARedText: { color: '#DC2626', fontSize: 10, fontWeight: '600' },
   linkPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EFF6FF', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: '#DBEAFE' },
   linkPillText: { color: '#2563EB', fontWeight: '700', fontSize: 12 },
   // Schedule-style feedback / confirmation modals

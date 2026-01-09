@@ -18,6 +18,7 @@ import {
 import { db } from '../../utils/firebaseConfig';
 import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { wp, hp, RFValue, isSmallDevice, isTablet } from '../../utils/responsive';
 
 const { width } = Dimensions.get('window');
 
@@ -172,7 +173,10 @@ function Messages() {
                 if (createdAtMs && senderId && senderId !== user?.uid) {
                   const lastReadAtMs = readReceiptsRef.current?.[s.linkId]?.lastReadAtMs || 0;
                   const wasManuallyRead = !!manuallyReadRef.current?.[s.linkId];
-                  if (createdAtMs > lastReadAtMs && wasManuallyRead) {
+                  const prevLastMsg = lastMessagesRef.current?.[s.linkId];
+                  const prevLastMsgTime = prevLastMsg?.createdAtMs || 0;
+                  // Clear manual read if: message is from someone else AND (newer than last read OR newer than previous last message)
+                  if (createdAtMs > lastReadAtMs || (createdAtMs > prevLastMsgTime && wasManuallyRead)) {
                     setManuallyRead((prev) => {
                       if (!prev[s.linkId]) return prev;
                       const next = { ...prev };
@@ -419,8 +423,10 @@ function Messages() {
                   (() => {
                     const lm = lastMessages[item.linkId];
                     const rr = readReceipts[item.linkId];
-                    const lastReadAtMs = rr?.lastReadAtMs;
-                    const isRead = manuallyRead[item.linkId] || (lm?.senderId && lm.senderId === user?.uid);
+                    const lastReadAtMs = rr?.lastReadAtMs || 0;
+                    const lastMsgTime = lm?.createdAtMs || 0;
+                    // Thread is read if: manually marked as read AND (no new messages OR last message is from user)
+                    const isRead = manuallyRead[item.linkId] && (lastMsgTime <= lastReadAtMs || lm?.senderId === user?.uid) || (lm?.senderId && lm.senderId === user?.uid);
                     return isRead ? styles.threadRowRead : null;
                   })(),
                 ]}
@@ -449,8 +455,10 @@ function Messages() {
                     style={(() => {
                       const lm = lastMessages[item.linkId];
                       const rr = readReceipts[item.linkId];
-                      const lastReadAtMs = rr?.lastReadAtMs;
-                      const isRead = manuallyRead[item.linkId] || (lm?.senderId && lm.senderId === user?.uid);
+                      const lastReadAtMs = rr?.lastReadAtMs || 0;
+                      const lastMsgTime = lm?.createdAtMs || 0;
+                      // Thread is read if: manually marked as read AND (no new messages OR last message is from user)
+                      const isRead = manuallyRead[item.linkId] && (lastMsgTime <= lastReadAtMs || lm?.senderId === user?.uid) || (lm?.senderId && lm.senderId === user?.uid);
                       return isRead ? styles.threadSubRead : styles.threadSubLast;
                     })()}
                     numberOfLines={1}
@@ -517,15 +525,15 @@ const styles = StyleSheet.create({
   listWrap: { flex: 1, paddingVertical: 10, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
   centerRow: { flexDirection: 'row', alignItems: 'center' },
   loadingText: { marginLeft: 8, color: '#6B7280' },
-  threadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#D1D5DB' },
-  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
-  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
-  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginRight: 12, borderWidth: 1, borderColor: '#DBEAFE' },
-  avatarText: { color: '#2563EB', fontWeight: '800' },
-  threadName: { fontSize: 16, fontWeight: '700', color: '#111827' },
-  threadSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  threadSubLast: { fontSize: 12, color: '#2563EB', marginTop: 2, fontWeight: '700' },
-  threadSubRead: { fontSize: 12, color: '#6B7280', marginTop: 2, fontWeight: '400' },
+  threadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: hp(1.5), paddingHorizontal: wp(3), borderBottomWidth: 1, borderBottomColor: '#D1D5DB' },
+  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: wp(2.5), paddingHorizontal: wp(2) },
+  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: wp(2.5), paddingHorizontal: wp(2) },
+  avatar: { width: wp(11), height: wp(11), borderRadius: wp(5.5), backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginRight: wp(3), borderWidth: 1, borderColor: '#DBEAFE' },
+  avatarText: { color: '#2563EB', fontWeight: '800', fontSize: RFValue(isSmallDevice() ? 14 : 16) },
+  threadName: { fontSize: RFValue(16), fontWeight: '700', color: '#111827' },
+  threadSub: { fontSize: RFValue(12), color: '#6B7280', marginTop: hp(0.25) },
+  threadSubLast: { fontSize: RFValue(12), color: '#2563EB', marginTop: hp(0.25), fontWeight: '700' },
+  threadSubRead: { fontSize: RFValue(12), color: '#6B7280', marginTop: hp(0.25), fontWeight: '400' },
   separator: { height: 2, backgroundColor: '#D1D5DB' },
   centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyText: { color: '#6B7280' },
@@ -534,22 +542,22 @@ const styles = StyleSheet.create({
   sectionTightBelow: { marginBottom: 6 },
   blockCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: wp(3),
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    padding: 12,
+    padding: wp(3),
     shadowColor: '#000',
     shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: hp(0.25) },
+    shadowRadius: wp(1),
     marginTop: 0,
   },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  sectionTitle: { fontSize: 30, fontWeight: '700', color: '#111827', marginRight: 8, marginBottom: 5, marginTop: 10 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: hp(2) },
+  sectionTitle: { fontSize: RFValue(isSmallDevice() ? 24 : 30), fontWeight: '700', color: '#111827', marginRight: wp(2), marginBottom: hp(0.6), marginTop: hp(1.2) },
   infoRow: { flexDirection: 'row', alignItems: 'center' },
-  infoIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F0F9FF', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  infoTitle: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 4 },
-  infoSub: { fontSize: 13, color: '#6B7280' },
+  infoIconWrap: { width: wp(10), height: wp(10), borderRadius: wp(5), backgroundColor: '#F0F9FF', alignItems: 'center', justifyContent: 'center', marginRight: wp(3) },
+  infoTitle: { fontSize: RFValue(14), fontWeight: '700', color: '#111827', marginBottom: hp(0.5) },
+  infoSub: { fontSize: RFValue(13), color: '#6B7280' },
   sidebar: {
     position: 'absolute',
     top: 0,
@@ -586,14 +594,14 @@ const styles = StyleSheet.create({
   modalButtonText: { fontSize: 16, fontWeight: '600', color: '#6B7280' },
   modalButtonDanger: { backgroundColor: '#FEE2E2' },
   modalButtonDangerText: { color: '#b91c1c' },
-  contentContainer: { padding: 16, paddingBottom: 80, paddingTop: 50, flexGrow: 1 },
-  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
-  loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
-  loadingText: { marginTop: 12, color: '#6B7280', fontSize: 16 },
-  emptyCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
-  emptyIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
-  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: 4 },
-  emptySubtext: { fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 16, marginBottom: 12 },
+  contentContainer: { padding: wp(4), paddingBottom: hp(10), paddingTop: hp(6), flexGrow: 1 },
+  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: hp(1) },
+  loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: hp(5) },
+  loadingText: { marginTop: hp(1.5), color: '#6B7280', fontSize: RFValue(16) },
+  emptyCard: { backgroundColor: '#fff', borderRadius: wp(3), padding: wp(4), alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: hp(0.75) }, shadowRadius: wp(3), elevation: 4, width: '100%', maxWidth: isTablet() ? wp(80) : wp(95) },
+  emptyIconWrap: { width: wp(10), height: wp(10), borderRadius: wp(5), backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: hp(1) },
+  emptyTitle: { fontSize: RFValue(16), fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: hp(0.5) },
+  emptySubtext: { fontSize: RFValue(12), color: '#6B7280', textAlign: 'center', lineHeight: RFValue(16), marginBottom: hp(1.5), paddingHorizontal: wp(4) },
   // Network Error Modal styles
   modalOverlayCenter: { 
     flex: 1, 
@@ -603,33 +611,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20
   },
   fbModalCard: {
-    width: '85%',
-    maxWidth: 400,
+    width: isSmallDevice() ? '90%' : '85%',
+    maxWidth: isTablet() ? wp(60) : 400,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    padding: 20,
+    borderRadius: wp(2),
+    padding: wp(5),
     shadowColor: '#000',
     shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: hp(0.25) },
+    shadowRadius: wp(2),
     elevation: 5,
-    minHeight: 120,
+    minHeight: hp(15),
     justifyContent: 'space-between',
   },
   fbModalContent: {
     flex: 1,
   },
   fbModalTitle: {
-    fontSize: 20,
+    fontSize: RFValue(20),
     fontWeight: '600',
     color: '#050505',
-    marginBottom: 8,
+    marginBottom: hp(1),
   },
   fbModalMessage: {
-    fontSize: 15,
+    fontSize: RFValue(15),
     color: '#65676B',
     textAlign: 'left',
-    lineHeight: 20,
+    lineHeight: RFValue(20),
   },
 });
 

@@ -86,15 +86,29 @@ const CalendarPicker = ({ onDateSelect, selectedDate, maxDate, minDate, currentY
   // Update currentMonth when currentYear changes
   React.useEffect(() => {
     if (currentYear) {
-      setCurrentMonth(new Date(currentYear, currentMonth.getMonth(), 1));
+      setCurrentMonth(prev => {
+        const newMonth = new Date(currentYear, prev.getMonth(), 1);
+        // Only update if year actually changed
+        if (newMonth.getFullYear() !== prev.getFullYear()) {
+          return newMonth;
+        }
+        return prev;
+      });
     }
   }, [currentYear]);
   
-  // Update currentYear when navigating to different months
+  // Update currentYear when navigating to different months - only call onYearChange when month changes
+  const prevMonthRef = React.useRef(currentMonth);
   React.useEffect(() => {
     if (onYearChange && currentMonth) {
-      onYearChange(currentMonth.getFullYear());
+      const currentYear = currentMonth.getFullYear();
+      const prevYear = prevMonthRef.current?.getFullYear();
+      // Only call onYearChange if year actually changed
+      if (currentYear !== prevYear) {
+        onYearChange(currentYear);
+      }
     }
+    prevMonthRef.current = currentMonth;
   }, [currentMonth, onYearChange]);
   
   const getDaysInMonth = (date) => {
@@ -370,6 +384,7 @@ const RegisterScreen = () => {
   const [validationErrors, setValidationErrors] = useState([]);
 
   const genderOptions = ['Male', 'Female'];
+  // Course options match StudentManagement.js DEFAULT_COURSES
   const courseOptions = ['BSAIS', 'BSBA', 'BSCRIM', 'BSHM', 'BSIT', 'BSTM', 'BTLED'];
   const sectionOptions = ['A', 'B', 'C', 'D'];
   const yearOptions = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
@@ -399,7 +414,7 @@ const RegisterScreen = () => {
         </TouchableOpacity>
         {isExpanded && (
           <View style={styles.dropdownOptionsContainer}>
-            <ScrollView nestedScrollEnabled style={{ maxHeight: 150 }}>
+            <ScrollView nestedScrollEnabled style={{ maxHeight: 300 }}>
               {options.map((option, index) => (
                 <TouchableOpacity
                   key={index}

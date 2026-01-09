@@ -24,7 +24,7 @@ const ROUTE_TITLES = {
   Profile: 'Profile',
   QRPreview: 'Student QR',
   Events: 'Events',
-  LinkParent: 'Link Parent',
+  LinkParent: 'Link Parents',
   ParentProfile: 'Parent Profile',
   About: 'About',
 };
@@ -325,7 +325,7 @@ export default function StudentTopHeader() {
             <TextInput
               value={headerSearchText}
               onChangeText={(text) => updateLinkParentSearch({ searchActive: true, searchQuery: text })}
-              placeholder="Search parent by name"
+              placeholder="Search parents by name"
               placeholderTextColor="#CFE3F5"
               autoCorrect={false}
               autoCapitalize="words"

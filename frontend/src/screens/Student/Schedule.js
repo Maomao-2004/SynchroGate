@@ -2637,7 +2637,7 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
                     });
                     
                     if (allLinks.length === 0) {
-                      showErrorModal('No linked parents found. Please link a parent first.');
+                      showErrorModal('No linked parents found. Please link parents first.');
                       setPermissionRequestVisible(false);
                       return;
                     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useCallback } from "react";
+import React, { useState, useEffect, useContext, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -39,6 +39,7 @@ const ParentProfile = () => {
   const [networkErrorTitle, setNetworkErrorTitle] = useState('');
   const [networkErrorMessage, setNetworkErrorMessage] = useState('');
   const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
+  const fetchedParentIdRef = useRef(null);
 
   // Hide tab bar when focused - absolutely ensure it's hidden
   // Try multiple approaches to ensure tab bar is hidden
@@ -111,21 +112,58 @@ const ParentProfile = () => {
     } catch { return String(user?.uid || '').trim(); }
   };
 
-  // Initialize currentParent from route params and fetch full data if needed
+  // Initialize currentParent from route params immediately
+  useEffect(() => {
+    // Set initial state from route params immediately to show basic info
+    if (parent) {
+      const newId = parent.id || parent.uid;
+      const newUid = parent.uid || parent.id;
+      const newParentId = parent.parentId || parent.studentId;
+      const parentKey = newId || newUid || newParentId;
+      
+      // Reset fetch ref if parent changed
+      if (fetchedParentIdRef.current !== parentKey) {
+        fetchedParentIdRef.current = null;
+      }
+      
+      setCurrentParent(prev => {
+        // Only update if route params changed to avoid unnecessary re-renders
+        if (prev?.id === newId && prev?.uid === newUid && prev?.parentId === newParentId) {
+          return prev; // No change needed
+        }
+        return {
+          ...parent,
+          id: newId,
+          uid: newUid,
+          parentId: newParentId,
+        };
+      });
+    }
+  }, [parent?.id, parent?.uid, parent?.parentId, parent?.studentId]);
+
+  // Fetch full parent data from Firestore
   useEffect(() => {
     const fetchParentData = async () => {
-      if (!parent?.id && !parent?.uid) return;
+      if (!parent?.id && !parent?.uid && !parent?.parentId && !parent?.studentId) return;
+      
+      const parentKey = parent?.id || parent?.uid || parent?.parentId || parent?.studentId;
+      // Skip fetch if we already fetched for this parent
+      if (fetchedParentIdRef.current === parentKey) {
+        return;
+      }
+      
+      fetchedParentIdRef.current = parentKey;
       
       try {
         let parentData = null;
         let parentDocId = null;
         
-        // Strategy 1: Try fetching by document ID (parent.id or parent.uid)
+        // Strategy 1: Try fetching by document ID (parent.id, parent.uid, parent.parentId, or parent.studentId)
         const candidateIds = [
-          parent.id,
-          parent.uid,
-          parent.parentId,
-          parent.studentId
+          parent?.id,
+          parent?.uid,
+          parent?.parentId,
+          parent?.studentId
         ].filter(Boolean);
         
         for (const candidateId of candidateIds) {
@@ -145,7 +183,7 @@ const ParentProfile = () => {
         }
         
         // Strategy 2: If not found by document ID, try querying by UID field
-        if (!parentData && (parent.uid || parent.id)) {
+        if (!parentData && (parent?.uid || parent?.id)) {
           try {
             const uidToQuery = parent.uid || parent.id;
             const q = query(
@@ -162,11 +200,12 @@ const ParentProfile = () => {
         }
         
         // Strategy 3: Try querying by parentId field (canonical ID)
-        if (!parentData && parent.parentId) {
+        if (!parentData && (parent?.parentId || parent?.studentId)) {
           try {
+            const parentIdToQuery = parent.parentId || parent.studentId;
             const q = query(
               collection(db, 'users'),
-              where('parentId', '==', parent.parentId),
+              where('parentId', '==', parentIdToQuery),
               where('role', '==', 'parent')
             );
             const qSnap = await getDocs(q);
@@ -177,35 +216,25 @@ const ParentProfile = () => {
           } catch {}
         }
         
-        // Strategy 4: Try querying by studentId field (if parentId was passed as studentId)
-        if (!parentData && parent.studentId) {
-          try {
-            const q = query(
-              collection(db, 'users'),
-              where('parentId', '==', parent.studentId),
-              where('role', '==', 'parent')
-            );
-            const qSnap = await getDocs(q);
-            if (!qSnap.empty) {
-              parentData = qSnap.docs[0].data();
-              parentDocId = qSnap.docs[0].id;
-            }
-          } catch {}
-        }
-        
-        // Merge fetched data with route params data, preserving linkId
+        // Merge fetched data with route params data, preserving linkId and all route params
         if (parentData && parentDocId) {
           setCurrentParent({
-            ...parent,
-            ...parentData,
+            ...parent, // Preserve all route params first
+            ...parentData, // Override with fetched data
             id: parentDocId,
-            uid: parentData.uid || parent.uid || parent.id,
-            parentId: parentData.parentId || parent.parentId || parent.studentId,
-            linkId: parent.linkId, // Preserve linkId from route params
+            uid: parentData.uid || parent?.uid || parent?.id,
+            parentId: parentData.parentId || parent?.parentId || parent?.studentId,
+            linkId: parent?.linkId, // Preserve linkId from route params
           });
         } else {
-          // If no data found, use what we have from route params
-          setCurrentParent(parent);
+          // If no data found, keep what we have from route params
+          setCurrentParent(prev => ({
+            ...prev,
+            ...parent,
+            id: parent?.id || parent?.uid,
+            uid: parent?.uid || parent?.id,
+            parentId: parent?.parentId || parent?.studentId,
+          }));
         }
       } catch (error) {
         console.log('Error fetching parent data:', error);
@@ -218,12 +247,12 @@ const ParentProfile = () => {
           setNetworkErrorVisible(true);
           setTimeout(() => setNetworkErrorVisible(false), 5000);
         }
-        setCurrentParent(parent);
+        // Keep existing state on error
       }
     };
     
     fetchParentData();
-  }, [parent?.id, parent?.uid, parent?.parentId]);
+  }, [parent?.id, parent?.uid, parent?.parentId, parent?.studentId]);
 
   // ✅ Load saved images
   useEffect(() => {
@@ -510,40 +539,69 @@ const ParentProfile = () => {
 
   // Real-time listener for parent data updates
   useEffect(() => {
-    if (!currentParent?.id) return;
+    if (!currentParent?.id && !currentParent?.uid && !currentParent?.parentId) return;
 
-    const parentDocRef = doc(db, 'users', currentParent.id);
-    const unsubscribe = onSnapshot(parentDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        // Only update if it's actually a parent
-        if (data.role === 'parent') {
-          const updatedData = { 
-            ...currentParent,
-            ...data,
-            id: snapshot.id,
-            uid: data.uid || currentParent.uid || currentParent.id,
-            parentId: data.parentId || currentParent.parentId || currentParent.studentId,
-            linkId: currentParent?.linkId || parent?.linkId, // Preserve linkId
-          };
-          setCurrentParent(updatedData);
+    // Try multiple IDs to find the document
+    const candidateIds = [
+      currentParent?.id,
+      currentParent?.uid,
+      currentParent?.parentId,
+      currentParent?.studentId
+    ].filter(Boolean);
+    
+    if (candidateIds.length === 0) return;
+
+    let unsubscribe = null;
+    
+    // Try each candidate ID until we find a valid document
+    const tryListen = async () => {
+      for (const candidateId of candidateIds) {
+        try {
+          const parentDocRef = doc(db, 'users', candidateId);
+          unsubscribe = onSnapshot(parentDocRef, (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              // Only update if it's actually a parent
+              if (data.role === 'parent') {
+                const updatedData = { 
+                  ...currentParent, // Preserve existing state
+                  ...data, // Update with fresh data
+                  id: snapshot.id,
+                  uid: data.uid || currentParent?.uid || currentParent?.id,
+                  parentId: data.parentId || currentParent?.parentId || currentParent?.studentId,
+                  linkId: currentParent?.linkId || parent?.linkId, // Preserve linkId
+                };
+                setCurrentParent(updatedData);
+              }
+            }
+          }, (error) => {
+            console.log('Error listening to parent updates:', error);
+            // Only show network error modal for actual network errors
+            if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
+              const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
+              setNetworkErrorTitle(errorInfo.title);
+              setNetworkErrorMessage(errorInfo.message);
+              setNetworkErrorColor(errorInfo.color);
+              setNetworkErrorVisible(true);
+              setTimeout(() => setNetworkErrorVisible(false), 5000);
+            }
+          });
+          break; // Successfully set up listener
+        } catch (err) {
+          // Try next candidate ID
+          continue;
         }
       }
-    }, (error) => {
-      console.log('Error listening to parent updates:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
-    });
+    };
+    
+    tryListen();
 
-    return () => unsubscribe();
-  }, [currentParent?.id, currentParent?.linkId, parent?.linkId]);
+    return () => {
+      if (unsubscribe) {
+        try { unsubscribe(); } catch {}
+      }
+    };
+  }, [currentParent?.id, currentParent?.uid, currentParent?.parentId, currentParent?.linkId]);
 
   return (
     <View style={{ flex: 1 }}>

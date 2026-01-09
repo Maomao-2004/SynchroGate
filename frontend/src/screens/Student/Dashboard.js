@@ -591,9 +591,9 @@ const StudentDashboard = () => {
                 <View style={styles.emptyIconWrap}>
                   <Ionicons name="person-outline" size={20} color="#EF4444" />
                 </View>
-                <Text style={styles.emptyTitle}>No Linked Parent</Text>
+                <Text style={styles.emptyTitle}>No Linked Parents</Text>
                 <Text style={styles.emptySubtext}>
-                  You haven't linked any parent to your account yet. Link your parent to start sharing your attendance and activities.
+                  You haven't linked any parents to your account yet. Link your parents to start sharing your attendance and activities.
                 </Text>
                 <TouchableOpacity
                   style={styles.primaryButton}

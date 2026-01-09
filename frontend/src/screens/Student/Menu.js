@@ -75,7 +75,7 @@ export default function Menu() {
     },
     {
       id: 'link-parent',
-      label: 'Linked Parent',
+      label: 'Linked Parents',
       icon: 'person-outline',
       color: '#10B981',
       bgColor: '#D1FAE5',

@@ -17,7 +17,6 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -534,8 +533,7 @@ function Messages() {
             data={[...(linkedParents || []), ...(linkedStudents || [])]}
             keyExtractor={(it) => it.linkId || it.id}
             ListHeaderComponent={() => <View style={{ height: 1, backgroundColor: '#D1D5DB' }} />}
-            contentContainerStyle={{ flexGrow: 1, paddingBottom: 16 }}
-            showsVerticalScrollIndicator={true}
+            contentContainerStyle={{ flexGrow: 1 }}
             renderItem={({ item }) => {
               const isStudent = item.studentId || item.studentIdNumber;
               const displayName = isStudent ? (item.studentName || 'Student') : (item.parentName || 'Parent');
@@ -627,12 +625,12 @@ function Messages() {
 
 const styles = StyleSheet.create({
   wrapper: { flex: 1, backgroundColor: '#F9FAFB' },
-  listWrap: { flex: 1, paddingVertical: 10, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
+  listWrap: { flex: 1, paddingVertical: 10, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 90 },
   centerRow: { flexDirection: 'row', alignItems: 'center' },
   loadingText: { marginLeft: 8, color: '#6B7280' },
   threadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#D1D5DB' },
-  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 8 },
-  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 8 },
+  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
+  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginRight: 12, borderWidth: 1, borderColor: '#DBEAFE' },
   avatarText: { color: '#2563EB', fontWeight: '800' },
   threadName: { fontSize: 16, fontWeight: '700', color: '#111827' },
@@ -644,7 +642,7 @@ const styles = StyleSheet.create({
   emptyText: { color: '#6B7280' },
   // Modal styles
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalCard: { backgroundColor: '#fff', borderRadius: 8, padding: 24, width: '85%', maxWidth: 400, alignItems: 'center' },
+  modalCard: { backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '80%', alignItems: 'center' },
   modalIconWrap: { width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 20, fontWeight: '700', color: '#111827', marginBottom: 8 },
   modalText: { fontSize: 16, color: '#6B7280', textAlign: 'center', marginBottom: 24 },
@@ -653,11 +651,11 @@ const styles = StyleSheet.create({
   modalButtonText: { fontSize: 16, fontWeight: '600', color: '#6B7280' },
   modalButtonDanger: { backgroundColor: '#FEE2E2' },
   modalButtonDangerText: { color: '#b91c1c' },
-  contentContainer: { padding: 16, paddingBottom: 80, paddingTop: 50, flexGrow: 1 },
+  contentContainer: { padding: 16, paddingBottom: 120, paddingTop: 50, flexGrow: 1 },
   centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16 },
   loadingText: { marginTop: 12, color: '#6B7280', fontSize: 16 },
-  emptyCard: { backgroundColor: '#fff', borderRadius: 8, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
+  emptyCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
   emptyIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: 4 },
   emptySubtext: { fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 16, marginBottom: 12 },
@@ -666,7 +664,7 @@ const styles = StyleSheet.create({
   sectionTightBelow: { marginBottom: 6 },
   blockCard: {
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#E5E7EB',
     padding: 12,

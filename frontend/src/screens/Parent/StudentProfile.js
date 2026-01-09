@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useCallback } from "react";
+import React, { useState, useEffect, useContext, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -40,6 +40,7 @@ const StudentProfile = () => {
   const [networkErrorTitle, setNetworkErrorTitle] = useState('');
   const [networkErrorMessage, setNetworkErrorMessage] = useState('');
   const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
+  const fetchedStudentIdRef = useRef(null);
 
   // Hide parent tab while focused and restore on blur
   useFocusEffect(
@@ -115,44 +116,124 @@ const StudentProfile = () => {
     } catch { return String(user?.uid || '').trim(); }
   };
 
-  // Initialize currentStudent from route params and fetch full data if needed
+  // Initialize currentStudent from route params immediately
+  useEffect(() => {
+    // Set initial state from route params immediately to show basic info
+    if (student) {
+      const newId = student.id || student.uid;
+      const newUid = student.uid || student.id;
+      const studentKey = newId || newUid || student.studentId;
+      
+      // Reset fetch ref if student changed
+      if (fetchedStudentIdRef.current !== studentKey) {
+        fetchedStudentIdRef.current = null;
+      }
+      
+      setCurrentStudent(prev => {
+        // Only update if route params changed to avoid unnecessary re-renders
+        if (prev?.id === newId && prev?.uid === newUid && prev?.studentId === student.studentId) {
+          return prev; // No change needed
+        }
+        return {
+          ...student,
+          id: newId,
+          uid: newUid,
+        };
+      });
+    }
+  }, [student?.id, student?.uid, student?.studentId]);
+
+  // Fetch full student data from Firestore
   useEffect(() => {
     const fetchStudentData = async () => {
-      if (!student?.id && !student?.uid) return;
+      if (!student?.id && !student?.uid && !student?.studentId) return;
+      
+      const studentKey = student?.id || student?.uid || student?.studentId;
+      // Skip fetch if we already fetched for this student
+      if (fetchedStudentIdRef.current === studentKey) {
+        return;
+      }
+      
+      fetchedStudentIdRef.current = studentKey;
       
       try {
-        const studentId = student?.id || student?.uid;
-        // Try to fetch full student data from Firestore
-        const studentDocRef = doc(db, 'users', studentId);
-        const studentSnap = await getDoc(studentDocRef);
+        let studentData = null;
+        let studentDocId = null;
         
-        if (studentSnap.exists()) {
-          const studentData = studentSnap.data();
-          setCurrentStudent({
-            ...student,
-            ...studentData,
-            id: studentSnap.id,
-            linkId: student.linkId, // Preserve linkId from route params
-          });
-        } else {
-          // If not found by ID, try by studentId
-          if (student.studentId) {
-            const q = query(collection(db, 'users'), where('studentId', '==', student.studentId), where('role', '==', 'student'));
+        // Strategy 1: Try fetching by document ID (student.id or student.uid)
+        const candidateIds = [
+          student?.id,
+          student?.uid,
+          student?.studentId
+        ].filter(Boolean);
+        
+        for (const candidateId of candidateIds) {
+          try {
+            const studentDocRef = doc(db, 'users', candidateId);
+            const studentSnap = await getDoc(studentDocRef);
+            if (studentSnap.exists()) {
+              const data = studentSnap.data();
+              // Verify it's actually a student
+              if (data.role === 'student') {
+                studentData = data;
+                studentDocId = studentSnap.id;
+                break;
+              }
+            }
+          } catch {}
+        }
+        
+        // Strategy 2: If not found by document ID, try querying by UID field
+        if (!studentData && (student?.uid || student?.id)) {
+          try {
+            const uidToQuery = student.uid || student.id;
+            const q = query(
+              collection(db, 'users'),
+              where('uid', '==', uidToQuery),
+              where('role', '==', 'student')
+            );
             const qSnap = await getDocs(q);
             if (!qSnap.empty) {
-              const studentData = qSnap.docs[0].data();
-              setCurrentStudent({
-                ...student,
-                ...studentData,
-                id: qSnap.docs[0].id,
-                linkId: student.linkId,
-              });
-            } else {
-              setCurrentStudent(student);
+              studentData = qSnap.docs[0].data();
+              studentDocId = qSnap.docs[0].id;
             }
-          } else {
-            setCurrentStudent(student);
-          }
+          } catch {}
+        }
+        
+        // Strategy 3: Try querying by studentId field (canonical ID like "2022-00689")
+        if (!studentData && student?.studentId) {
+          try {
+            const q = query(
+              collection(db, 'users'),
+              where('studentId', '==', student.studentId),
+              where('role', '==', 'student')
+            );
+            const qSnap = await getDocs(q);
+            if (!qSnap.empty) {
+              studentData = qSnap.docs[0].data();
+              studentDocId = qSnap.docs[0].id;
+            }
+          } catch {}
+        }
+        
+        // Merge fetched data with route params data, preserving linkId and all route params
+        if (studentData && studentDocId) {
+          setCurrentStudent({
+            ...student, // Preserve all route params first
+            ...studentData, // Override with fetched data
+            id: studentDocId,
+            uid: studentData.uid || student?.uid || student?.id,
+            studentId: studentData.studentId || student?.studentId,
+            linkId: student?.linkId, // Preserve linkId from route params
+          });
+        } else {
+          // If no data found, keep what we have from route params
+          setCurrentStudent(prev => ({
+            ...prev,
+            ...student,
+            id: student?.id || student?.uid,
+            uid: student?.uid || student?.id,
+          }));
         }
       } catch (error) {
         console.error('Error fetching student data:', error);
@@ -165,12 +246,12 @@ const StudentProfile = () => {
           setNetworkErrorVisible(true);
           setTimeout(() => setNetworkErrorVisible(false), 5000);
         }
-        setCurrentStudent(student);
+        // Keep existing state on error
       }
     };
     
     fetchStudentData();
-  }, [student?.id, student?.uid]);
+  }, [student?.id, student?.uid, student?.studentId]);
 
   // ✅ Load saved images
   useEffect(() => {
@@ -494,25 +575,68 @@ const StudentProfile = () => {
 
   // Real-time listener for student data updates
   useEffect(() => {
-    if (!student?.id && !student?.uid) return;
+    if (!currentStudent?.id && !currentStudent?.uid && !currentStudent?.studentId) return;
 
-    const studentId = student?.id || student?.uid;
-    const studentDocRef = doc(db, 'users', studentId);
-    const unsubscribe = onSnapshot(studentDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const updatedData = { 
-          id: snapshot.id, 
-          ...snapshot.data(),
-          linkId: currentStudent?.linkId || student?.linkId, // Preserve linkId
-        };
-        setCurrentStudent(updatedData);
+    // Try multiple IDs to find the document
+    const candidateIds = [
+      currentStudent?.id,
+      currentStudent?.uid,
+      currentStudent?.studentId
+    ].filter(Boolean);
+    
+    if (candidateIds.length === 0) return;
+
+    let unsubscribe = null;
+    
+    // Try each candidate ID until we find a valid document
+    const tryListen = async () => {
+      for (const candidateId of candidateIds) {
+        try {
+          const studentDocRef = doc(db, 'users', candidateId);
+          unsubscribe = onSnapshot(studentDocRef, (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              // Verify it's actually a student
+              if (data.role === 'student') {
+                const updatedData = { 
+                  ...currentStudent, // Preserve existing state
+                  ...data, // Update with fresh data
+                  id: snapshot.id,
+                  uid: data.uid || currentStudent?.uid || currentStudent?.id,
+                  studentId: data.studentId || currentStudent?.studentId,
+                  linkId: currentStudent?.linkId || student?.linkId, // Preserve linkId
+                };
+                setCurrentStudent(updatedData);
+              }
+            }
+          }, (error) => {
+            console.log('Error listening to student updates:', error);
+            // Only show network error modal for actual network errors
+            if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
+              const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
+              setNetworkErrorTitle(errorInfo.title);
+              setNetworkErrorMessage(errorInfo.message);
+              setNetworkErrorColor(errorInfo.color);
+              setNetworkErrorVisible(true);
+              setTimeout(() => setNetworkErrorVisible(false), 5000);
+            }
+          });
+          break; // Successfully set up listener
+        } catch (err) {
+          // Try next candidate ID
+          continue;
+        }
       }
-    }, (error) => {
-      console.log('Error listening to student updates:', error);
-    });
+    };
+    
+    tryListen();
 
-    return () => unsubscribe();
-  }, [student?.id, student?.uid, currentStudent?.linkId]);
+    return () => {
+      if (unsubscribe) {
+        try { unsubscribe(); } catch {}
+      }
+    };
+  }, [currentStudent?.id, currentStudent?.uid, currentStudent?.studentId, currentStudent?.linkId]);
 
   return (
     <View style={{ flex: 1 }}>
