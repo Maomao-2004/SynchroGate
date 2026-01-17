@@ -13,6 +13,7 @@ import { AuthContext } from '../../contexts/AuthContext';
 import { NetworkContext } from '../../contexts/NetworkContext';
 import { isFirestoreConnectionError } from '../../utils/firestoreErrorHandler';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { cacheSchedule, getCachedSchedule } from '../../offline/storage';
 
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const DARK_GREEN = '#064E3B';
@@ -185,6 +186,28 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
 
   const fetchSchedule = async () => {
     if (!studentId) { setSchedule([]); setScheduleDocData(null); return; }
+    
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedSchedule(studentId);
+      if (cachedData) {
+        setScheduleDocData(cachedData.scheduleDocData);
+        setSchedule(cachedData.schedule);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached schedule');
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached schedule:', error);
+    }
+    
+    // Only fetch from Firestore if online
+    if (!isConnected) {
+      return;
+    }
+    
     try {
       const ref = doc(db, 'schedules', studentId.toString());
       const snap = await getDoc(ref);
@@ -195,26 +218,27 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
         subjectsMap = data?.subjects || {};
         studentName = data?.studentName || '';
       }
-      setScheduleDocData({ id: ref.id, studentId, studentName, subjects: subjectsMap });
+      const scheduleDocDataValue = { id: ref.id, studentId, studentName, subjects: subjectsMap };
+      setScheduleDocData(scheduleDocDataValue);
       const flattened = [];
       Object.keys(subjectsMap).forEach(subj => {
         const arr = Array.isArray(subjectsMap[subj]) ? subjectsMap[subj] : [];
         arr.forEach(e => flattened.push({ subject: subj, day: e.day, time: e.time }));
       });
       setSchedule(flattened);
+      
+      // Cache the data for offline access
+      try {
+        await cacheSchedule(studentId, {
+          scheduleDocData: scheduleDocDataValue,
+          schedule: flattened,
+        });
+      } catch (cacheError) {
+        console.log('Error caching schedule:', cacheError);
+      }
     } catch (err) {
       console.error('Error fetching schedule:', err);
-      // Only show network error modal for actual network errors
-      if (err?.code?.includes('unavailable') || err?.code?.includes('network') || err?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: err.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        Alert.alert('Error fetching schedule', err.message);
-      }
+      // Don't show network error modal during navigation/offline mode - only log the error
     }
   };
   const resolveStudentMeta = async (uid, fallbackName, localGender) => {
@@ -315,15 +339,7 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
         setIsLinkedToParent(hasLinks);
       } catch (error) {
         console.error('Error checking linked parents:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
+        // Don't show network error modal during navigation/offline mode
         setIsLinkedToParent(false);
       }
     };
@@ -389,23 +405,15 @@ const GraphSchedule = ({ studentId: propStudentId }) => {
             }
           }
         } else {
-          setHasActivePermission(false);
-          setPermissionExpiry(null);
-        }
-      } catch (error) {
-        console.error('Error checking permission:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setHasActivePermission(false);
         setPermissionExpiry(null);
       }
+    } catch (error) {
+      console.error('Error checking permission:', error);
+      // Don't show network error modal during navigation/offline mode
+      setHasActivePermission(false);
+      setPermissionExpiry(null);
+    }
     };
     checkPermission();
     // Check every minute for expiry

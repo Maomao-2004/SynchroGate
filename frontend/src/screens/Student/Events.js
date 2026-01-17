@@ -14,9 +14,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { collection, query, getDocs, orderBy } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { cacheAnnouncements, getCachedAnnouncements } from '../../offline/storage';
 
 const Events = () => {
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const navigation = useNavigation();
   const isFocused = useIsFocused();
 
@@ -63,7 +68,30 @@ const Events = () => {
 
   // Load announcements from Firebase
   const loadAnnouncements = async () => {
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedAnnouncements();
+      if (cachedData) {
+        setAnnouncements(cachedData);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached announcements');
+          setAnnouncementsLoading(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached announcements:', error);
+    }
+    
     setAnnouncementsLoading(true);
+    
+    // Only fetch from Firestore if online
+    if (!isConnected) {
+      setAnnouncementsLoading(false);
+      return;
+    }
+    
     try {
       const announcementsRef = collection(db, 'announcements');
       const announcementsQuery = query(announcementsRef, orderBy('createdAt', 'desc'));
@@ -93,18 +121,17 @@ const Events = () => {
       });
       
       setAnnouncements(announcementsData);
+      
+      // Cache the data for offline access
+      try {
+        await cacheAnnouncements(announcementsData);
+      } catch (cacheError) {
+        console.log('Error caching announcements:', cacheError);
+      }
     } catch (error) {
       console.error('Error loading announcements:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
-      setAnnouncements([]);
+      // Don't show network error modal during navigation/offline mode
+      // Keep using cached data if available
     } finally {
       setAnnouncementsLoading(false);
     }

@@ -503,17 +503,18 @@ const StudentProfile = () => {
           }
         }
         
-        // Notification for the parent (self notification)
+        // Notification for the parent (self notification) - parent initiated the unlink, so no push notification needed
         const parentNotif = {
           id: `${currentStudent.linkId}_unlinked_self_${Date.now()}`,
           type: 'link_unlinked_self',
           title: 'Unlinked Student',
           message: `You unlinked ${studentName || 'the student'}.`,
           createdAt: nowIso,
-          status: 'unread',
+          status: 'read', // Mark as read since parent initiated the action
           parentId: String(user?.parentId || user?.uid || ''),
           studentId: schoolId,
-          linkId: currentStudent.linkId
+          linkId: currentStudent.linkId,
+          skipPushNotification: true // Flag to prevent push notification (backend can check this)
         };
         
         try {

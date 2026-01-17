@@ -22,6 +22,7 @@ import { db } from '../../utils/firebaseConfig';
 import { wp, hp, fontSizes, responsiveStyles, getResponsiveDimensions } from '../../utils/responsive';
 import avatarEventEmitter from '../../utils/avatarEventEmitter';
 import { cacheDashboardData, getCachedDashboardData } from '../../offline/storage';
+import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 
 const { width, height } = Dimensions.get('window');
 const statusBarHeight = StatusBar.currentHeight || 0;
@@ -48,6 +49,7 @@ const StudentDashboard = () => {
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(true);
   const [hasQrCode, setHasQrCode] = useState(false);
+  
   const [loading, setLoading] = useState(false);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [qrLoaded, setQrLoaded] = useState(false);
@@ -58,6 +60,10 @@ const StudentDashboard = () => {
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [ongoingLoading, setOngoingLoading] = useState(true);
   const [isLandscape, setIsLandscape] = useState(false);
+  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
+  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
+  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
+  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
 
   // Load profile picture using same key as Profile; refresh on focus
   const loadProfilePic = React.useCallback(async () => {
@@ -76,6 +82,46 @@ const StudentDashboard = () => {
     if (isFocused) loadProfilePic();
   }, [isFocused, loadProfilePic]);
 
+  // Show network error modal only once per offline session in Dashboard
+  useEffect(() => {
+    const checkAndShowNetworkError = async () => {
+      if (!isFocused || isConnected) return;
+      
+      // Check if we've already shown the modal in this offline session
+      const hasShownKey = 'dashboard_offline_modal_shown';
+      try {
+        const hasShown = await AsyncStorage.getItem(hasShownKey);
+        if (hasShown) return; // Already shown in this session
+      } catch {}
+      
+      // Show the modal
+      const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: 'You are currently offline' });
+      setNetworkErrorTitle(errorInfo.title);
+      setNetworkErrorMessage(errorInfo.message);
+      setNetworkErrorColor(errorInfo.color);
+      setNetworkErrorVisible(true);
+      
+      // Mark as shown
+      try {
+        await AsyncStorage.setItem(hasShownKey, 'true');
+      } catch {}
+      
+      // Auto-close after 3 seconds
+      setTimeout(() => {
+        setNetworkErrorVisible(false);
+      }, 3000);
+    };
+    
+    checkAndShowNetworkError();
+  }, [isFocused, isConnected]);
+
+  // Clear the "has shown" flag when connection is restored
+  useEffect(() => {
+    if (isConnected) {
+      AsyncStorage.removeItem('dashboard_offline_modal_shown').catch(() => {});
+    }
+  }, [isConnected]);
+
   // Listen for avatar changes from Profile screen
   useEffect(() => {
     const handleAvatarChange = (data) => {
@@ -91,42 +137,74 @@ const StudentDashboard = () => {
   }, [user?.studentId, loadProfilePic]);
 
 
+  // Load QR code status (following same pattern as Schedule/Alerts/Events)
+  const loadQrStatus = async () => {
+    if (!user?.studentId) { 
+      setHasQrCode(false); 
+      try { setQrLoaded(true); } catch {} 
+      return; 
+    }
+    
+    // Try to load from cache first (works offline)
+    try {
+      const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
+      if (cached) {
+        setHasQrCode(true);
+        console.log('✅ QR code status loaded from cache');
+        // If offline, use cached value and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached QR code status');
+          try { setQrLoaded(true); } catch {}
+          return;
+        }
+      } else {
+        setHasQrCode(false);
+      }
+    } catch (error) {
+      console.log('Error loading cached QR code status:', error);
+    }
+    
+    // Only fetch from Firestore if online
+    if (!isConnected) {
+      try { setQrLoaded(true); } catch {}
+      return;
+    }
+    
+    try {
+      const qrRef = doc(db, 'student_QRcodes', String(user.studentId));
+      const qrSnap = await getDoc(qrRef);
+      const data = qrSnap.exists() ? qrSnap.data() : {};
+      const has = Boolean(data?.qrCodeUrl);
+      setHasQrCode(has);
+      
+      // Cache the data for offline access
+      try {
+        if (has && data.qrCodeUrl) {
+          await AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, String(data.qrCodeUrl));
+          console.log('✅ QR code saved to cache');
+        } else {
+          await AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`);
+        }
+      } catch (cacheError) {
+        console.log('Error caching QR code:', cacheError);
+      }
+    } catch (error) {
+      console.error('Error loading QR code status:', error);
+      // Keep using cached state if available
+      try {
+        const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
+        if (cached) {
+          setHasQrCode(true);
+          console.log('Using cached QR code after Firestore error');
+        }
+      } catch {}
+    } finally {
+      try { setQrLoaded(true); } catch {}
+    }
+  };
+
   // Check if student has QR generated by admin (student_QRcodes)
   useEffect(() => {
-    const loadQrStatus = async () => {
-      try {
-        if (!user?.studentId) { setHasQrCode(false); return; }
-        // Use cached value first for instant UI (works offline)
-        try {
-          const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
-          if (cached) {
-            setHasQrCode(true);
-            // If offline, use cached value and return early
-            if (!isConnected) {
-              try { setQrLoaded(true); } catch {}
-              return;
-            }
-          }
-        } catch {}
-        
-        // Only fetch from Firestore if online
-        if (isConnected) {
-          const qrRef = doc(db, 'student_QRcodes', String(user.studentId));
-          const qrSnap = await getDoc(qrRef);
-          const data = qrSnap.exists() ? qrSnap.data() : {};
-          const has = Boolean(data?.qrCodeUrl);
-          setHasQrCode(has);
-          try {
-            if (has) await AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, String(data.qrCodeUrl));
-            else await AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`);
-          } catch {}
-        }
-      } catch (e) {
-        // Keep whatever cached state we might have set
-        console.log('Error loading QR status:', e);
-      }
-      try { setQrLoaded(true); } catch {}
-    };
     if (isFocused) loadQrStatus();
   }, [isFocused, user?.studentId, isConnected]);
 
@@ -146,9 +224,9 @@ const StudentDashboard = () => {
     }
   }, [loading, profileLoaded, qrLoaded]);
 
-  // Live updates for QR availability from student_QRcodes
+  // Live updates for QR availability from student_QRcodes (only when online)
   useEffect(() => {
-    if (!user?.studentId) return undefined;
+    if (!user?.studentId || !isConnected) return undefined;
     const ref = doc(db, 'student_QRcodes', String(user.studentId));
     const unsub = onSnapshot(ref, (snap) => {
       try {
@@ -156,15 +234,19 @@ const StudentDashboard = () => {
         const has = Boolean(data?.qrCodeUrl);
         setHasQrCode(has);
         try {
-          if (has) AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, String(data.qrCodeUrl));
-          else AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`);
+          if (has && data.qrCodeUrl) {
+            AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, String(data.qrCodeUrl));
+            console.log('✅ QR code updated from real-time listener and cached');
+          } else {
+            AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`);
+          }
         } catch {}
       } catch {
         // ignore
       }
     });
     return () => { try { unsub && unsub(); } catch {} };
-  }, [user?.studentId]);
+  }, [user?.studentId, isConnected]);
 
   // Load linked parents with real-time listener (query both studentId and studentIdNumber)
   useEffect(() => {
@@ -845,6 +927,18 @@ const StudentDashboard = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Network Error Modal - Only shown once in Dashboard */}
+      <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.fbModalCard}>
+            <View style={styles.fbModalContent}>
+              <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
+              {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 };
@@ -1001,7 +1095,7 @@ const styles = StyleSheet.create({
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', minHeight: 500, marginTop: -50 },
   emptyCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
@@ -1017,7 +1111,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
@@ -1026,6 +1120,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#111827',
+    marginTop: 0,
     marginBottom: 4,
   },
   emptySubtext: {

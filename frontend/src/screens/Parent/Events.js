@@ -14,10 +14,13 @@ import { AuthContext } from '../../contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, getDocs, orderBy } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheAnnouncements, getCachedAnnouncements } from '../../offline/storage';
 
 const Events = () => {
   const { user } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const navigation = useNavigation();
   const isFocused = useIsFocused();
 
@@ -37,10 +40,6 @@ const Events = () => {
   const [announcements, setAnnouncements] = useState([]);
   const [announcementsLoading, setAnnouncementsLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
 
   // Card visual palette (matches admin dashboard card styling)
   const adminCardPalette = {
@@ -67,7 +66,30 @@ const Events = () => {
 
   // Load announcements from Firebase
   const loadAnnouncements = async () => {
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedAnnouncements();
+      if (cachedData) {
+        setAnnouncements(cachedData);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached announcements');
+          setAnnouncementsLoading(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached announcements:', error);
+    }
+    
     setAnnouncementsLoading(true);
+    
+    // Only fetch from Firestore if online
+    if (!isConnected) {
+      setAnnouncementsLoading(false);
+      return;
+    }
+    
     try {
       const announcementsRef = collection(db, 'announcements');
       const announcementsQuery = query(announcementsRef, orderBy('createdAt', 'desc'));
@@ -97,18 +119,17 @@ const Events = () => {
       });
       
       setAnnouncements(announcementsData);
+      
+      // Cache the data for offline access
+      try {
+        await cacheAnnouncements(announcementsData);
+      } catch (cacheError) {
+        console.log('Error caching announcements:', cacheError);
+      }
     } catch (error) {
       console.error('Error loading announcements:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
-      setAnnouncements([]);
+      // Don't show network error modal during navigation/offline mode
+      // Keep using cached data if available
     } finally {
       setAnnouncementsLoading(false);
     }
@@ -116,7 +137,7 @@ const Events = () => {
 
   useEffect(() => {
     if (isFocused) loadAnnouncements();
-  }, [isFocused]);
+  }, [isFocused, isConnected]);
 
 
 
@@ -281,18 +302,6 @@ const Events = () => {
     </View>
 
     {/* Logout handled by unified header */}
-
-    {/* Network Error Modal */}
-    <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-      <View style={styles.modalOverlayCenter}>
-        <View style={styles.fbModalCard}>
-          <View style={styles.fbModalContent}>
-            <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-            {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-          </View>
-        </View>
-      </View>
-    </Modal>
   </>);
 };
 

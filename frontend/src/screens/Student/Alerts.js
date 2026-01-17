@@ -15,6 +15,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthContext } from '../../contexts/AuthContext';
 import { NetworkContext } from '../../contexts/NetworkContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { cacheAlerts, getCachedAlerts } from '../../offline/storage';
 import { isFirestoreConnectionError } from '../../utils/firestoreErrorHandler';
 import { 
   collection, 
@@ -98,9 +99,31 @@ const Alerts = () => {
       return;
     }
     
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedAlerts(user.studentId);
+      if (cachedData) {
+        setAlerts(cachedData);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached alerts');
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached alerts:', error);
+    }
+    
     try {
       setLoading(true);
       const allAlerts = [];
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setLoading(false);
+        return;
+      }
       
       // Get student alerts using user.studentId as document ID
       console.log('🔍 STUDENT ALERTS: Loading alerts for student ID:', user.studentId);
@@ -197,19 +220,17 @@ const Alerts = () => {
       });
       
       setAlerts(allAlerts);
+      
+      // Cache the data for offline access
+      try {
+        await cacheAlerts(user.studentId, allAlerts);
+      } catch (cacheError) {
+        console.log('Error caching alerts:', cacheError);
+      }
     } catch (error) {
       console.error('Error loading alerts:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        Alert.alert('Error', 'Failed to load alerts');
-      }
+      // Don't show network error modal during navigation/offline mode
+      // Keep using cached data if available
     } finally {
       setLoading(false);
     }

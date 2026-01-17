@@ -16,9 +16,10 @@ import { useNavigation, useIsFocused, useFocusEffect } from '@react-navigation/n
 import { PARENT_TAB_BAR_STYLE } from '../../navigation/tabStyles';
 import { Ionicons } from '@expo/vector-icons';
 import { AuthContext } from '../../contexts/AuthContext';
+import { NetworkContext } from '../../contexts/NetworkContext';
 import { collection, query, where, orderBy, onSnapshot, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { cacheAttendanceLogs, getCachedAttendanceLogs } from '../../offline/storage';
 import useNetworkMonitor from '../../hooks/useNetworkMonitor';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { wp, hp, fontSizes } from '../../utils/responsive';
@@ -29,9 +30,12 @@ const { width } = Dimensions.get('window');
 // Mirrors Student/AttendanceLog but scopes to selected linked student
 const AttendanceLog = () => {
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnectedFromContext = networkContext?.isConnected ?? true;
   const navigation = useNavigation();
   const isFocused = useIsFocused();
-  const isConnected = useNetworkMonitor();
+  const isConnectedMonitor = useNetworkMonitor();
+  const isConnected = isConnectedFromContext && isConnectedMonitor;
 
   useFocusEffect(
     React.useCallback(() => {
@@ -67,10 +71,6 @@ const AttendanceLog = () => {
 
   const [logoutVisible, setLogoutVisible] = useState(false);
   const [showAllEntries, setShowAllEntries] = useState(false);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
 
   // Load profile picture
   useEffect(() => {
@@ -96,6 +96,12 @@ const AttendanceLog = () => {
         setSelectedStudentId(null); 
         return; 
       }
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        return;
+      }
+      
       try {
         const canonicalId = String(user?.parentId || '').trim();
         const qUid = query(
@@ -156,21 +162,12 @@ const AttendanceLog = () => {
         }
       } catch (error) {
         console.error('Error loading linked students:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setLinkedStudents([]);
         setSelectedStudentId(null);
       }
     };
     loadLinks();
-  }, [user?.uid, user?.parentId]);
+  }, [user?.uid, user?.parentId, isConnected]);
 
   // Load today's schedule count for selected student
   useEffect(() => {
@@ -203,15 +200,6 @@ const AttendanceLog = () => {
         setTodayScheduleCount(count);
       } catch (error) {
         console.error('Error loading today\'s schedule:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setTodayScheduleCount(0);
       } finally {
         setScheduleLoading(false);
@@ -231,15 +219,6 @@ const AttendanceLog = () => {
         setAnnouncementsCount(announcementsSnap.size);
       } catch (error) {
         console.error('Error loading announcements count:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setAnnouncementsCount(0);
       } finally {
         setAnnouncementsLoading(false);
@@ -257,6 +236,32 @@ const AttendanceLog = () => {
       setStats({ today: 0, thisWeek: 0, thisMonth: 0 }); 
       return; 
     }
+    
+    // Try to load from cache first (works offline)
+    const loadCachedData = async () => {
+      try {
+        const cachedData = await getCachedAttendanceLogs(selectedStudentDocId);
+        if (cachedData && Array.isArray(cachedData.logs)) {
+          setLogs(cachedData.logs || []);
+          calculateStats(cachedData.logs || []);
+          // If offline, use cached data and return early
+          if (!isConnected) {
+            console.log('📴 Offline mode - using cached attendance logs');
+            return;
+          }
+        }
+      } catch (error) {
+        console.log('Error loading cached attendance logs:', error);
+      }
+    };
+    
+    loadCachedData();
+    
+    // Only set up real-time listener if online
+    if (!isConnected) {
+      return;
+    }
+    
     console.log('📊 PARENT ATTENDANCE: Subscribing to attendance for studentDocId:', selectedStudentDocId);
     const attendanceRef = collection(db, 'student_attendances', String(selectedStudentDocId), 'scans');
     let attendanceQuery;
@@ -276,22 +281,22 @@ const AttendanceLog = () => {
         }
         setLogs(data || []);
         calculateStats(data || []);
+        
+        // Cache the data for offline access
+        try {
+          cacheAttendanceLogs(selectedStudentDocId, { logs: data || [] });
+        } catch (cacheError) {
+          console.log('Error caching attendance logs:', cacheError);
+        }
       },
       error => {
-        const errorInfo = getNetworkErrorMessage(error);
-        if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         console.error('❌ PARENT ATTENDANCE: Subscription error:', error?.message || String(error));
         console.error('❌ PARENT ATTENDANCE: Error details:', {
           code: error?.code,
           message: error?.message,
           studentDocId: selectedStudentDocId
         });
+        // Don't show network error modal during navigation/offline mode
         setLogs([]);
         setStats({ today: 0, thisWeek: 0, thisMonth: 0 });
       }
@@ -304,7 +309,7 @@ const AttendanceLog = () => {
         console.log('📊 PARENT ATTENDANCE: Error unsubscribing:', e);
       }
     };
-  }, [selectedStudentDocId]);
+  }, [selectedStudentDocId, isConnected]);
 
   // Re-render at midnight to clear today's activity section (no deletion in Firestore)
   useEffect(() => {
@@ -725,17 +730,6 @@ const AttendanceLog = () => {
         <Text style={styles.toggleAllButtonText}>{showAllEntries ? 'See today' : 'All Entries'}</Text>
       </TouchableOpacity>
       )}
-      {/* Network Error Modal */}
-      <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.fbModalCard}>
-            <View style={styles.fbModalContent}>
-              <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-              {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 };

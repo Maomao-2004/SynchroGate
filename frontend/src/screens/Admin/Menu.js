@@ -141,7 +141,7 @@ export default function AdminMenu() {
         </View>
 
         {/* Developer and About row */}
-        <View style={styles.gridContainer}>
+        <View style={[styles.gridContainer, { marginTop: 0 }]}>
           <TouchableOpacity
             style={styles.card}
             onPress={() => navigateSafe({ name: 'Home', params: { screen: 'Developer' } })}

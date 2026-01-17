@@ -46,7 +46,92 @@ const QRPreview = () => {
   // Prevent screenshots and screen recordings while this screen is visible
   ScreenCapture.usePreventScreenCapture();
 
-  // Hide tab bar when this screen is focused
+  // Load QR code (following same pattern as Schedule/Alerts/Events)
+  // Memoize with useCallback to prevent stale closures
+  const loadQrCode = useCallback(async () => {
+    if (!user?.studentId) { 
+      setQrValue(''); 
+      setError('Missing student ID'); 
+      setLoading(false);
+      return; 
+    }
+    
+    // Try to load from cache first (works offline) - BEFORE setting loading state
+    let cachedValue = null;
+    try {
+      cachedValue = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
+      if (cachedValue) {
+        setQrValue(cachedValue);
+        setLoading(false);
+        setError(null);
+        console.log('✅ QR code loaded from cache');
+        // If offline, use cached value and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached QR code');
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached QR code:', error);
+    }
+    
+    // Only fetch from Firestore if online
+    if (!isConnected) {
+      setLoading(false);
+      if (!cachedValue) {
+        setError('QR code not available offline. Please connect to internet to load QR code.');
+      }
+      return;
+    }
+    
+    // Now set loading state for Firestore fetch
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const ref = doc(db, 'student_QRcodes', String(user.studentId));
+      const snap = await getDoc(ref);
+      if (snap.exists() && snap.data()?.qrCodeUrl) {
+        const value = String(snap.data().qrCodeUrl);
+        setQrValue(value);
+        
+        // Cache the data for offline access
+        try { 
+          await AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, value);
+          console.log('✅ QR code saved to cache');
+        } catch (cacheError) {
+          console.log('Error caching QR code:', cacheError);
+        }
+      } else {
+        // If no QR code found online and no cached value, show error
+        if (!cachedValue) {
+          setError('QR code not available');
+          try { await AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`); } catch {}
+        } else {
+          // Keep using cached value even if not found online
+          console.log('⚠️ QR code not found online, but using cached value');
+        }
+      }
+    } catch (error) {
+      console.error('Error loading QR code from Firestore:', error);
+      // Keep using cached value if available
+      if (!cachedValue) {
+        try {
+          const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
+          if (cached) {
+            setQrValue(cached);
+            console.log('Using cached QR code after Firestore error');
+          } else {
+            setError('Failed to load QR code');
+          }
+        } catch {}
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.studentId, isConnected]);
+
+  // Hide tab bar when this screen is focused and load QR code
   useFocusEffect(
     useCallback(() => {
       // Hide tab bar when screen is focused
@@ -57,20 +142,8 @@ const QRPreview = () => {
         });
       }
       
-      // Load QR code when screen is focused (ensures cache is checked)
-      const loadQrOnFocus = async () => {
-        if (!user?.studentId) return;
-        try {
-          const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
-          if (cached) {
-            setQrValue(cached);
-            console.log('✅ QR code loaded from cache on focus');
-          }
-        } catch (error) {
-          console.log('Error loading QR on focus:', error);
-        }
-      };
-      loadQrOnFocus();
+      // Load QR code when screen is focused (ensures cache is checked immediately)
+      loadQrCode();
       
       // Cleanup function to restore tab bar when screen loses focus
       return () => {
@@ -81,127 +154,8 @@ const QRPreview = () => {
           });
         }
       };
-    }, [navigation, user?.studentId])
+    }, [navigation, loadQrCode])
   );
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      let cachedValue = null;
-      
-      try {
-        if (!user?.studentId) { 
-          setQrValue(''); 
-          setError('Missing student ID'); 
-          setLoading(false);
-          return; 
-        }
-        
-        // ALWAYS try cached value first for instant load (works offline)
-        try {
-          cachedValue = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
-          if (cachedValue) {
-            setQrValue(cachedValue);
-            setLoading(false);
-            console.log('✅ QR code loaded from cache');
-            // If offline, use cached value and return early
-            if (!isConnected) {
-              console.log('📴 Offline mode - using cached QR code');
-              return;
-            }
-          }
-        } catch (cacheError) {
-          console.log('Error loading cached QR code:', cacheError);
-        }
-        
-        // Only try to fetch from Firestore if online
-        if (isConnected) {
-          try {
-            const ref = doc(db, 'student_QRcodes', String(user.studentId));
-            const snap = await getDoc(ref);
-            if (snap.exists() && snap.data()?.qrCodeUrl) {
-              const value = String(snap.data().qrCodeUrl);
-              setQrValue(value);
-              // Always save to cache for offline access
-              try { 
-                await AsyncStorage.setItem(`qrCodeUrl_${user.studentId}`, value);
-                console.log('✅ QR code saved to cache');
-              } catch (saveError) {
-                console.log('Error saving QR code to cache:', saveError);
-              }
-            } else {
-              // If no QR code found online and no cached value, show error
-              if (!cachedValue) {
-                setError('QR code not available');
-                try { await AsyncStorage.removeItem(`qrCodeUrl_${user.studentId}`); } catch {}
-              } else {
-                // Keep using cached value even if not found online
-                console.log('⚠️ QR code not found online, but using cached value');
-              }
-            }
-          } catch (firestoreError) {
-            console.error('Error loading QR code from Firestore:', firestoreError);
-            // If we have cached value, keep using it
-            if (cachedValue) {
-              console.log('Using cached QR code due to Firestore error');
-              setQrValue(cachedValue);
-            } else {
-              // Network error - try to use cached value if available
-              if (firestoreError?.code?.includes('unavailable') || firestoreError?.code?.includes('network') || firestoreError?.message?.toLowerCase().includes('network')) {
-                const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: firestoreError.message });
-                setNetworkErrorTitle(errorInfo.title);
-                setNetworkErrorMessage(errorInfo.message);
-                setNetworkErrorColor(errorInfo.color);
-                setNetworkErrorVisible(true);
-                setTimeout(() => setNetworkErrorVisible(false), 5000);
-              } else {
-                setError('Failed to load QR code');
-              }
-            }
-          }
-        } else {
-          // Offline mode - if we have cached value, use it; otherwise show error
-          if (!cachedValue) {
-            setError('QR code not available offline. Please connect to internet to load QR code.');
-          } else {
-            console.log('📴 Offline mode - displaying cached QR code');
-          }
-        }
-      } catch (e) {
-        console.error('Error loading QR code:', e);
-        // If we have cached value, use it
-        if (cachedValue) {
-          setQrValue(cachedValue);
-          console.log('Using cached QR code due to error');
-        } else if (e?.code?.includes('unavailable') || e?.code?.includes('network') || e?.message?.toLowerCase().includes('network')) {
-          // Network error - try to use cached value if available
-          try {
-            const cached = await AsyncStorage.getItem(`qrCodeUrl_${user.studentId}`);
-            if (cached) {
-              setQrValue(cached);
-              console.log('Using cached QR code after network error');
-              return;
-            }
-          } catch {}
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: e.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        } else {
-          // If we have cached value, use it; otherwise show error
-          if (!cachedValue) {
-            setError('Failed to load QR code');
-          }
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [user?.studentId, isConnected]);
 
   // Listen for recent scans to show undo button
   useEffect(() => {

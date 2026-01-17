@@ -6,7 +6,8 @@ import { AuthContext } from '../../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc, collection, query, where, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheSchedule, getCachedSchedule } from '../../offline/storage';
 
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const UNIVERSAL_HEADER_COLOR = '#004F89';
@@ -17,6 +18,8 @@ const ParentSchedule = () => {
   const [currentTime, setCurrentTime] = useState(new Date());
   const navigation = useNavigation();
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const [profilePic, setProfilePic] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [logoutVisible, setLogoutVisible] = useState(false);
@@ -29,10 +32,6 @@ const ParentSchedule = () => {
   const [schedule, setSchedule] = useState([]); // [{subject, day, time}]
   const [studentName, setStudentName] = useState('');
   const [loadingSchedule, setLoadingSchedule] = useState(false);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
   
   // Schedule permission states
   const [hasPermission, setHasPermission] = useState(false);
@@ -77,6 +76,13 @@ const ParentSchedule = () => {
         setLoadingChildren(false); 
         return; 
       }
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setLoadingChildren(false);
+        return;
+      }
+      
       try {
         setLoadingChildren(true);
         console.log('Loading linked children for parent:', user.uid);
@@ -119,22 +125,13 @@ const ParentSchedule = () => {
         if (list.length && !selectedChildId) setSelectedChildId(list[0].id);
       } catch (error) {
         console.error('Error loading children:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setChildren([]);
       } finally { 
         setLoadingChildren(false); 
       }
     };
     fetchChildren();
-  }, [user?.uid]);
+  }, [user?.uid, isConnected]);
 
   // Refresh linked children and schedule when navigating back to this screen
   useEffect(() => {
@@ -179,15 +176,6 @@ const ParentSchedule = () => {
         }
       } catch (error) {
         console.error('Error loading children on focus:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
       }
 
       // Reload schedule for selected child (if any)
@@ -317,21 +305,48 @@ const ParentSchedule = () => {
         setStudentName(''); 
         return; 
       }
+      
+      // Find the selected child to get their identifiers
+      const selectedChild = children.find(child => child.id === selectedChildId);
+      if (!selectedChild) {
+        console.log('Selected child not found in children list');
+        setSchedule([]);
+        setStudentName('');
+        setLoadingSchedule(false);
+        return;
+      }
+      
+      const studentIdNumber = selectedChild.studentId;
+      const studentUid = selectedChild.id;
+      const cacheKey = studentIdNumber || studentUid;
+      
+      // Try to load from cache first (works offline)
+      if (cacheKey) {
+        try {
+          const cachedData = await getCachedSchedule(cacheKey);
+          if (cachedData) {
+            setSchedule(cachedData.schedule || []);
+            setStudentName(cachedData.studentName || selectedChild.firstName || '');
+            // If offline, use cached data and return early
+            if (!isConnected) {
+              console.log('📴 Offline mode - using cached schedule');
+              setLoadingSchedule(false);
+              return;
+            }
+          }
+        } catch (error) {
+          console.log('Error loading cached schedule:', error);
+        }
+      }
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setLoadingSchedule(false);
+        return;
+      }
+      
       try {
         setLoadingSchedule(true);
-        
-        // Find the selected child to get their identifiers
-        const selectedChild = children.find(child => child.id === selectedChildId);
-        if (!selectedChild) {
-          console.log('Selected child not found in children list');
-          setSchedule([]);
-          setStudentName('');
-          setLoadingSchedule(false);
-          return;
-        }
-        
-        const studentIdNumber = selectedChild.studentId;
-        const studentUid = selectedChild.id;
         console.log('Fetching schedule for student ID:', studentIdNumber);
         
         if (!studentIdNumber) { 
@@ -378,24 +393,29 @@ const ParentSchedule = () => {
         
         console.log('Flattened schedule:', flattened);
         setSchedule(flattened);
+        
+        // Cache the schedule for offline access
+        if (cacheKey && flattened.length > 0) {
+          try {
+            await cacheSchedule(cacheKey, {
+              schedule: flattened,
+              studentName: sName,
+            });
+          } catch (cacheError) {
+            console.log('Error caching schedule:', cacheError);
+          }
+        }
       } catch (error) {
         console.error('Error fetching schedule:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
+        // Don't show network error modal during navigation/offline mode
+        // Keep using cached data if available
         setSchedule([]); 
       } finally { 
         setLoadingSchedule(false); 
       }
     };
     fetchSchedule();
-  }, [selectedChildId, children]);
+  }, [selectedChildId, children, isConnected]);
 
   const subjects = [...new Set(schedule.map(s => s.subject))];
   const getEntries = (day, subject) => schedule.filter(s => s.day === day && s.subject === subject)
@@ -530,20 +550,10 @@ const ParentSchedule = () => {
       setTimeout(() => setFeedbackVisible(false), 3000);
     } catch (error) {
       console.error('Error granting permission:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        setFeedbackMessage('Failed to grant permission. Please try again.');
-        setFeedbackSuccess(false);
-        setFeedbackVisible(true);
-        setTimeout(() => setFeedbackVisible(false), 3000);
-      }
+      setFeedbackMessage('Failed to grant permission. Please try again.');
+      setFeedbackSuccess(false);
+      setFeedbackVisible(true);
+      setTimeout(() => setFeedbackVisible(false), 3000);
     } finally {
       setIsProcessingPermission(false);
     }
@@ -595,20 +605,10 @@ const ParentSchedule = () => {
       setTimeout(() => setFeedbackVisible(false), 3000);
     } catch (error) {
       console.error('Error removing permission:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        setFeedbackMessage('Failed to remove permission. Please try again.');
-        setFeedbackSuccess(false);
-        setFeedbackVisible(true);
-        setTimeout(() => setFeedbackVisible(false), 3000);
-      }
+      setFeedbackMessage('Failed to remove permission. Please try again.');
+      setFeedbackSuccess(false);
+      setFeedbackVisible(true);
+      setTimeout(() => setFeedbackVisible(false), 3000);
     } finally {
       setIsProcessingPermission(false);
     }
@@ -942,18 +942,6 @@ const ParentSchedule = () => {
           </View>
       </Modal>
 
-      {/* Network Error Modal */}
-      <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.fbModalCard}>
-            <View style={styles.fbModalContent}>
-              <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-              {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* Permission Confirmation Modal */}
       <Modal transparent animationType="fade" visible={permissionConfirmVisible} onRequestClose={() => setPermissionConfirmVisible(false)}>
         <View style={styles.modalOverlayCenter}>
@@ -980,7 +968,7 @@ const ParentSchedule = () => {
               <TouchableOpacity 
                 style={[
                   styles.fbModalConfirmButton, 
-                  { backgroundColor: hasPermission ? '#DC2626' : '#10B981' },
+                  { backgroundColor: hasPermission ? '#991B1B' : '#047857' },
                   isProcessingPermission && styles.fbModalButtonDisabled
                 ]} 
                 onPress={hasPermission ? removePermission : grantPermission}
@@ -1092,7 +1080,7 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     textAlign: 'center'
   },
-  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 100 },
+  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   loadingText: { marginTop: 12, color: '#6B7280', fontSize: 16 },
   emptyCard: { backgroundColor: '#fff', borderRadius: 8, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
@@ -1327,18 +1315,18 @@ const styles = StyleSheet.create({
   },
   permissionButton: {
     position: 'absolute',
-    bottom: 100,
+    bottom: 20,
     right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#004F89',
+    width: 60,
+    height: 60,
+    borderRadius: 15,
+    backgroundColor: '#004f89',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.2,
     shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 8,
+    shadowRadius: 5,
     elevation: 8,
     zIndex: 1000,
   },

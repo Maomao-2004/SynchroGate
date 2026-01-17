@@ -347,28 +347,14 @@ const ParentManagement = () => {
               }
               return (
                 <>
-                  <View style={styles.headerContainer}>
-                    <View style={styles.legendContainer}>
-                      <View style={styles.legendItem}>
-                        <View style={[styles.legendDot, { backgroundColor: '#DCFCE7' }]} />
-                        <Text style={styles.legendText}>Linked</Text>
-                      </View>
-                      <View style={styles.legendItem}>
-                        <View style={[styles.legendDot, { backgroundColor: '#FEF2F2' }]} />
-                        <Text style={styles.legendText}>Unlinked</Text>
-                      </View>
-                    </View>
-                    <View style={styles.badgeContainer}>
-                    </View>
-                  </View>
-                  {results.map((p) => {
+                  {results.map((p, index) => {
                     const pid = p.id || p.uid;
                     const arr = linkedByParent[pid] || [];
                     const isLinked = arr.length > 0;
                     const rowStyle = isLinked ? styles.parentRowLinked : styles.parentRowUnlinked;
                     return (
                       <TouchableOpacity 
-                        key={p.uid || p.id} 
+                        key={p.id || p.uid || `parent-${index}`} 
                         style={rowStyle}
                         activeOpacity={0.7}
                         onPress={() => openDetail(p)}
@@ -417,29 +403,15 @@ const ParentManagement = () => {
           </View>
         ) : (
           <>
-            <View style={styles.headerContainer}>
-              <View style={styles.legendContainer}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#DCFCE7' }]} />
-                  <Text style={styles.legendText}>Linked</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#FEF2F2' }]} />
-                  <Text style={styles.legendText}>Unlinked</Text>
-                </View>
-              </View>
-              <View style={styles.badgeContainer}>
-              </View>
-            </View>
             <View>
-              {parents.map((p) => {
+              {parents.map((p, index) => {
                 const pid = p.id || p.uid;
                 const arr = linkedByParent[pid] || [];
                 const isLinked = arr.length > 0;
                 const rowStyle = isLinked ? styles.parentRowLinked : styles.parentRowUnlinked;
                 return (
                   <TouchableOpacity 
-                    key={p.uid || p.id} 
+                    key={p.id || p.uid || `parent-${index}`} 
                     style={rowStyle}
                     activeOpacity={0.7}
                     onPress={() => openDetail(p)}

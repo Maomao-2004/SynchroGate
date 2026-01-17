@@ -1146,17 +1146,18 @@ function LinkStudents() {
           console.log('🔔 No school ID found for student, notification not sent');
         }
         
-        // Notification for the parent (self notification)
+        // Notification for the parent (self notification) - parent initiated the unlink, so no push notification needed
         const parentNotif = {
           id: `${unlinkStudentData.linkId}_unlinked_self_${Date.now()}`,
           type: 'link_unlinked_self',
           title: 'Unlinked Student',
           message: `You unlinked ${studentName || 'the student'}.`,
           createdAt: nowIso,
-          status: 'unread',
+          status: 'read', // Mark as read since parent initiated the action
           parentId: String(user?.parentId || user?.uid || ''),
           studentId: schoolId, // Use the resolved school ID, not Firebase UID
-          linkId: unlinkStudentData.linkId
+          linkId: unlinkStudentData.linkId,
+          skipPushNotification: true // Flag to prevent push notification (backend can check this)
         };
         
         try {

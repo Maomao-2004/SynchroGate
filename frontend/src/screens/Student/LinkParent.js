@@ -35,6 +35,8 @@ import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/ne
 import { deleteConversationOnUnlink, deleteAllStudentToStudentConversations } from '../../utils/conversationUtils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import avatarEventEmitter from '../../utils/avatarEventEmitter';
+import { cacheLinkedParents, getCachedLinkedParents } from '../../offline/storage';
+import { NetworkContext } from '../../contexts/NetworkContext';
 // Removed: sendAlertPushNotification import - backend handles all push notifications automatically
 
 const { width, height } = Dimensions.get('window');
@@ -64,6 +66,8 @@ function LinkStudents() {
   const route = useRoute();
   const isFocused = useIsFocused();
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   
   const [logoutVisible, setLogoutVisible] = useState(false);
   const [profilePic, setProfilePic] = useState(null);
@@ -179,11 +183,39 @@ function LinkStudents() {
   const loadLinkedStudents = async () => {
     if (!user?.uid) { setLoadingLinked(false); setLinkedStudents([]); setRequestedStudents([]); return; }
     if (isLoadingStudents) return;
+    
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedLinkedParents(user.uid);
+      if (cachedData) {
+        setLinkedStudents(cachedData.linkedStudents || []);
+        setRequestedStudents(cachedData.requestedStudents || []);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached linked parents');
+          setLoadingLinked(false);
+          setIsLoadingStudents(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached linked parents:', error);
+    }
+    
     const timeoutId = setTimeout(() => { setLoadingLinked(false); setLinkedStudents([]); setRequestedStudents([]); setIsLoadingStudents(false); }, 10000);
     try {
       setIsLoadingStudents(true);
       setLoadingLinked(true);
       setLoadError(null);
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setLoadingLinked(false);
+        setIsLoadingStudents(false);
+        clearTimeout(timeoutId);
+        return;
+      }
+      
       const canonicalId = await getCanonicalStudentDocId();
       // Query for active links where current user is the student
       const q1 = query(collection(db, 'parent_student_links'), where('studentId', '==', user.uid), where('status', '==', 'active'));
@@ -253,21 +285,21 @@ function LinkStudents() {
         }
         setLinkedStudents(parents);
         setRequestedStudents(requests);
+        
+        // Cache the data for offline access
+        try {
+          await cacheLinkedParents(user.uid, {
+            linkedStudents: parents,
+            requestedStudents: requests,
+          });
+        } catch (cacheError) {
+          console.log('Error caching linked parents:', cacheError);
+        }
     } catch (error) {
       console.error('Error loading linked students:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        setLoadError(error.message || 'Failed to load linked parents');
-      }
-      setLinkedStudents([]);
-      setRequestedStudents([]);
+      // Don't show network error modal during navigation/offline mode
+      setLoadError(error.message || 'Failed to load linked parents');
+      // Keep using cached data if available
     } finally {
       clearTimeout(timeoutId);
       setLoadingLinked(false);
@@ -1225,21 +1257,22 @@ function LinkStudents() {
         // Get current student's canonical ID
         const studentCanonicalId = await getCanonicalStudentDocId();
         
-        // Notification for the student (current user)
+        // Notification for the student (current user) - student initiated the unlink, so no push notification needed
         if (studentCanonicalId) {
           const studentNotif = {
             id: `unlink_${unlinkStudentData.linkId}_${Date.now()}`,
-            type: 'link_unlinked',
+            type: 'link_unlinked_self',
             title: 'Parent Unlinked',
-            message: `${parentName || 'A parent'} unlinked from you.`,
+            message: `You unlinked ${parentName || 'the parent'}.`,
             createdAt: nowIso,
-            status: 'unread',
+            status: 'read', // Mark as read since student initiated the action
             parentId: unlinkStudentData.id || unlinkStudentData.uid,
             parentName: parentName || 'Parent',
             studentId: studentCanonicalId,
             studentName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Student',
             relationship: unlinkStudentData.relationship || '',
-            linkId: unlinkStudentData.linkId
+            linkId: unlinkStudentData.linkId,
+            skipPushNotification: true // Flag to prevent push notification (backend can check this)
           };
           
           try {
@@ -1256,21 +1289,23 @@ function LinkStudents() {
           }
         }
         
-        // Notification for the parent (unlinkStudentData contains parent info)
+        // Notification for the parent - student initiated the unlink, parent should be notified
         const parentUid = String(unlinkStudentData.id || unlinkStudentData.uid || '').trim();
         const parentCanonicalId = String(unlinkStudentData.studentId || unlinkStudentData.parentId || '').trim();
         const parentDocId = parentCanonicalId && parentCanonicalId.includes('-') ? parentCanonicalId : parentUid;
         
         if (parentDocId) {
+          const studentName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'the student';
           const parentNotif = {
-            id: `${unlinkStudentData.linkId}_unlinked_self_${Date.now()}`,
-            type: 'link_unlinked_self',
-            title: 'Unlinked Student',
-            message: `You unlinked ${user.firstName || ''} ${user.lastName || ''}`.trim() || 'the student',
+            id: `${unlinkStudentData.linkId}_unlinked_${Date.now()}`,
+            type: 'link_unlinked',
+            title: 'Student Unlinked',
+            message: `${studentName} unlinked from you.`,
             createdAt: nowIso,
             status: 'unread',
             parentId: parentDocId,
             studentId: studentCanonicalId,
+            studentName: studentName,
             linkId: unlinkStudentData.linkId
           };
           

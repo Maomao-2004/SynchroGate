@@ -15,12 +15,15 @@ import { doc, getDoc, query, collection, where, getDocs, onSnapshot, deleteDoc, 
 import { db } from '../../utils/firebaseConfig';
 import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import { AuthContext } from '../../contexts/AuthContext';
+import { NetworkContext } from '../../contexts/NetworkContext';
 import { deleteConversationOnUnlink, deleteAllStudentToStudentConversations } from '../../utils/conversationUtils';
 
 const ParentProfile = () => {
   const route = useRoute();
   const navigation = useNavigation();
   const { user } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const parent = route?.params?.parent || {};
 
   const defaultProfile = require("../../assets/icons/unknown avatar icon.jpg");
@@ -369,6 +372,17 @@ const ParentProfile = () => {
       return;
     }
     
+    // Check if offline before attempting unlink
+    if (!isConnected) {
+      setUnlinkConfirmVisible(false);
+      setFeedbackSuccess(false);
+      setFeedbackTitle('No Internet Connection');
+      setFeedbackMessage('Unable to unlink parent. Please check your internet connection and try again.');
+      setFeedbackVisible(true);
+      setTimeout(() => setFeedbackVisible(false), 3000);
+      return;
+    }
+    
     try {
       setUnlinking(true);
       await deleteDoc(doc(db, 'parent_student_links', currentParent.linkId));
@@ -426,21 +440,22 @@ const ParentProfile = () => {
         // Get current student's canonical ID
         const studentCanonicalId = await getCanonicalStudentDocId();
         
-        // Notification for the student (current user)
+        // Notification for the student (current user) - student initiated the unlink, so no push notification needed
         if (studentCanonicalId) {
           const studentNotif = {
             id: `unlink_${currentParent.linkId}_${Date.now()}`,
-            type: 'link_unlinked',
+            type: 'link_unlinked_self',
             title: 'Parent Unlinked',
-            message: `${parentName || 'A parent'} unlinked from you.`,
+            message: `You unlinked ${parentName || 'the parent'}.`,
             createdAt: nowIso,
-            status: 'unread',
+            status: 'read', // Mark as read since student initiated the action
             parentId: currentParent.id || currentParent.uid,
             parentName: parentName || 'Parent',
             studentId: studentCanonicalId,
             studentName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Student',
             relationship: currentParent.relationship || '',
-            linkId: currentParent.linkId
+            linkId: currentParent.linkId,
+            skipPushNotification: true // Flag to prevent push notification (backend can check this)
           };
           
           try {

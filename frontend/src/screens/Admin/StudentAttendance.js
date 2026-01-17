@@ -355,7 +355,6 @@ const StudentAttendance = () => {
           >
             {loading ? (
               <View style={styles.centerContainer}>
-                <Text style={styles.loadingText}>Loading students...</Text>
               </View>
             ) : error ? (
               <View style={styles.centerContainer}>

@@ -26,6 +26,7 @@ import useNetworkMonitor from '../../hooks/useNetworkMonitor';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { wp, hp, fontSizes } from '../../utils/responsive';
 import avatarEventEmitter from '../../utils/avatarEventEmitter';
+import { cacheAttendanceLogs, getCachedAttendanceLogs } from '../../offline/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -154,6 +155,31 @@ const AttendanceLog = () => {
       attendanceQuery = attendanceRef;
     }
 
+    // Try to load from cache first (works offline)
+    const loadCachedData = async () => {
+      try {
+        const cachedData = await getCachedAttendanceLogs(studentId);
+        if (cachedData && Array.isArray(cachedData.logs)) {
+          setLogs(cachedData.logs || []);
+          calculateStats(cachedData.logs || []);
+          // If offline, use cached data and return early
+          if (!isConnected) {
+            console.log('📴 Offline mode - using cached attendance logs');
+            return;
+          }
+        }
+      } catch (error) {
+        console.log('Error loading cached attendance logs:', error);
+      }
+    };
+    
+    loadCachedData();
+    
+    // Only set up real-time listener if online
+    if (!isConnected) {
+      return;
+    }
+    
     const unsubscribe = onSnapshot(
       attendanceQuery,
       snapshot => {
@@ -164,16 +190,24 @@ const AttendanceLog = () => {
         }
         setLogs(data || []);
         calculateStats(data || []);
+        
+        // Cache the data for offline access
+        try {
+          cacheAttendanceLogs(studentId, { logs: data || [] });
+        } catch (cacheError) {
+          console.log('Error caching attendance logs:', cacheError);
+        }
       },
       error => {
         console.error('❌ AttendanceLog: subscription error:', error?.message || error);
+        // Don't show network error modal during navigation/offline mode
       }
     );
 
     return () => {
       try { unsubscribe?.(); } catch {}
     };
-  }, [targetStudent, isFocused, isAdminView]);
+  }, [targetStudent, isFocused, isAdminView, isConnected]);
 
   // Re-render at midnight without modifying Firestore
   useEffect(() => {
@@ -236,15 +270,7 @@ const AttendanceLog = () => {
         setAnnouncementsCount(announcementsSnap.size);
       } catch (error) {
         console.error('Error loading announcements count:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
+        // Don't show network error modal during navigation/offline mode
         setAnnouncementsCount(0);
       } finally {
         setAnnouncementsLoading(false);

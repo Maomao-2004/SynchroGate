@@ -5,7 +5,7 @@ import { useNavigation, useIsFocused, useFocusEffect, CommonActions } from '@rea
 import { Ionicons } from '@expo/vector-icons';
 import { AuthContext } from '../../contexts/AuthContext';
 import { BASE_URL } from '../../utils/apiConfig';
-import { collection, query, where, getDocs, doc, collectionGroup, getDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, collectionGroup } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 // Removed: sendAlertPushNotification import - backend handles all push notifications automatically
@@ -51,103 +51,6 @@ const Developer = () => {
     { name: 'Logs', endpoint: '/api/logs', method: 'GET', requiresAuth: true },
   ];
 
-  // Test push notification function
-  const testPushNotification = async () => {
-    try {
-      setLoading(true);
-      console.log('🧪 Testing push notification...');
-      
-      // Get current user's document ID - admin/developer use "Admin"/"Developer", others use their ID
-      const userRole = user?.role || 'admin';
-      const roleLower = String(userRole).toLowerCase();
-      let userDocId;
-      
-      if (roleLower === 'admin') {
-        userDocId = 'Admin';
-      } else if (roleLower === 'developer') {
-        userDocId = 'Developer';
-      } else if (roleLower === 'parent') {
-        // Try to get canonical parentId
-        const parentId = user?.parentId;
-        userDocId = (parentId && String(parentId).includes('-')) ? String(parentId) : user?.uid;
-      } else if (roleLower === 'student') {
-        userDocId = user?.studentId || user?.uid;
-      } else {
-        userDocId = user?.uid || 'Admin';
-      }
-      
-      console.log('🔍 User document ID:', userDocId, 'Role:', userRole);
-      
-      // Get FCM token from Firestore - try multiple possible document IDs
-      let fcmToken = null;
-      const possibleIds = [userDocId];
-      
-      // Also try UID if different
-      if (user?.uid && user.uid !== userDocId) {
-        possibleIds.push(user.uid);
-      }
-      
-      // For admin, also try "Admin"
-      if (roleLower === 'admin' && userDocId !== 'Admin') {
-        possibleIds.push('Admin');
-      }
-      
-      for (const docId of possibleIds) {
-        try {
-          const userRef = doc(db, 'users', docId);
-          const userSnap = await getDoc(userRef);
-          if (userSnap.exists()) {
-            const data = userSnap.data();
-            if (data?.fcmToken) {
-              fcmToken = data.fcmToken;
-              console.log(`🔑 FCM Token found in document: ${docId}`, fcmToken.substring(0, 20) + '...');
-              break;
-            }
-          }
-        } catch (err) {
-          console.log(`⚠️ Error checking document ${docId}:`, err.message);
-        }
-      }
-      
-      if (!fcmToken) {
-        console.log('⚠️ No FCM token found in any document. User needs to log in again to generate token.');
-      }
-
-      const testAlert = {
-        id: `test-${Date.now()}`,
-        type: 'test',
-        alertType: 'test',
-        title: 'Test Push Notification',
-        message: 'This is a test notification. If you see this, push notifications are working!',
-        status: 'unread',
-        studentId: user?.studentId || '',
-        parentId: user?.parentId || '',
-      };
-
-      console.log('📤 Calling sendAlertPushNotification with:', {
-        userId: userDocId,
-        role: userRole,
-        hasFcmToken: !!fcmToken
-      });
-
-      // Removed: sendAlertPushNotification - backend handles all push notifications automatically
-      // For testing, create the alert in Firestore and backend will send notification
-      console.log('ℹ️ Test alert push notification disabled - backend handles all notifications automatically');
-      
-      setFeedbackMessage(fcmToken 
-        ? '✅ Push notification sent! Check your device (close the app first). Check Railway logs for confirmation.'
-        : '⚠️ No FCM token found. Please log out and log back in to generate a token.');
-      setFeedbackSuccess(!!fcmToken);
-      setFeedbackVisible(true);
-    } catch (error) {
-      console.error('❌ Test push notification failed:', error);
-      setFeedbackMessage(`❌ Error: ${error.message}. Check console for details.`);
-      setFeedbackSuccess(false);
-      setFeedbackVisible(true);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
     if (isFocused) {
@@ -585,26 +488,6 @@ const Developer = () => {
               ));
             })()}
           </View>
-        </View>
-
-        {/* Push Notification Test Section */}
-        <View style={styles.apiTestingSection}>
-          <Text style={styles.mainSectionTitle}>🧪 Push Notification Test</Text>
-          <TouchableOpacity
-            style={[styles.testButton, { backgroundColor: '#004f89' }]}
-            onPress={testPushNotification}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.testButtonText}>Test Push Notification</Text>
-            )}
-          </TouchableOpacity>
-          <Text style={styles.testHint}>
-            Sends a test notification to your device.{'\n'}
-            Close the app first, then tap this button.
-          </Text>
         </View>
 
         {/* API Testing Section */}

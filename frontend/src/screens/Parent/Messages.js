@@ -16,8 +16,9 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheMessages, getCachedMessages, cacheLinkedStudents, getCachedLinkedStudents } from '../../offline/storage';
 import { wp, hp, RFValue, isSmallDevice, isTablet } from '../../utils/responsive';
 
 const { width } = Dimensions.get('window');
@@ -25,6 +26,8 @@ const { width } = Dimensions.get('window');
 function Messages() {
   const navigation = useNavigation();
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const isFocused = useIsFocused();
   const [loadingLinks, setLoadingLinks] = useState(true);
   const [linkedStudents, setLinkedStudents] = useState([]);
@@ -42,10 +45,7 @@ function Messages() {
   const lastMessagesRef = useRef({});
   const manuallyReadRef = useRef({});
   const [manualReadLoaded, setManualReadLoaded] = useState(false);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
+  // Network error modals removed - following same pattern as Student Messages.js
   // Local notification dedupe removed; notifications now handled globally
 
   const storageKey = useMemo(() => (user?.uid ? `parentManualRead_${user.uid}` : null), [user?.uid]);
@@ -112,13 +112,56 @@ function Messages() {
   // Load linked students for this parent
   useEffect(() => {
     if (!user?.uid) { setLinkedStudents([]); setLoadingLinks(false); return; }
-    const canonicalId = String(user?.parentId || '').trim();
-    const qUid = query(
-      collection(db, 'parent_student_links'),
-      where('parentId', '==', user.uid),
-      where('status', '==', 'active'),
-    );
-    const mergeStudents = (docs) => {
+
+    // Try to load cached data first (works offline) - following same pattern as Student Messages.js
+    const loadCachedData = async () => {
+      try {
+        // Load cached lastMessages
+        const cachedMessages = await getCachedMessages(user.uid);
+        if (cachedMessages && typeof cachedMessages === 'object') {
+          setLastMessages(cachedMessages);
+          console.log('✅ Last messages loaded from cache');
+        }
+      } catch (error) {
+        console.log('Error loading cached last messages:', error);
+      }
+
+      // If offline, load cached linked students and return early (skip Firestore listeners)
+      if (!isConnected) {
+        try {
+          const cachedLinkedStudents = await getCachedLinkedStudents(user.uid);
+          if (cachedLinkedStudents && Array.isArray(cachedLinkedStudents)) {
+            setLinkedStudents(cachedLinkedStudents);
+            setLoadingLinks(false);
+            console.log('✅ Linked students loaded from cache (offline mode)');
+            return true; // Indicate cached data was loaded
+          }
+        } catch (error) {
+          console.log('Error loading cached linked students:', error);
+        }
+        // If no cached linked students but offline, still show empty list
+        setLoadingLinks(false);
+        return true;
+      }
+      return false; // Indicate we need to fetch from Firestore
+    };
+
+    // Load cached data first, then conditionally set up listeners
+    (async () => {
+      const cachedLoaded = await loadCachedData();
+      // If cached data was loaded and we're offline, don't set up Firestore listeners
+      if (cachedLoaded) return;
+
+      // Only set up Firestore listeners if online
+      if (!isConnected) return;
+
+      const canonicalId = String(user?.parentId || '').trim();
+      const qUid = query(
+        collection(db, 'parent_student_links'),
+        where('parentId', '==', user.uid),
+        where('status', '==', 'active'),
+      );
+      const mergeStudents = async (docs) => {
       // Build next list of students
       const nextMap = new Map();
       docs.forEach(d => {
@@ -136,15 +179,39 @@ function Messages() {
       const nextStudents = Array.from(nextMap.values());
       setLinkedStudents(nextStudents);
 
+      // Cache linked students for offline access
+      try {
+        cacheLinkedStudents(user.uid, nextStudents);
+      } catch (error) {
+        console.log('Error caching linked students:', error);
+      }
+
       // Reset listeners for deduped set
       try { Object.values(convUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
       try { Object.values(readUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
       convUnsubsRef.current = {};
       readUnsubsRef.current = {};
-      setLastMessages({});
-      setReadReceipts({});
+      // Don't reset lastMessages and readReceipts - preserve them for offline mode
 
-      // Attach last-message and read-receipt listeners per student
+      // Try to load cached lastMessages (works offline)
+      // This ensures cached messages are available even when offline
+      try {
+        const cachedData = await getCachedMessages(user.uid);
+        if (cachedData && typeof cachedData === 'object') {
+          setLastMessages(cachedData);
+          console.log('✅ Last messages loaded from cache in mergeStudents');
+          // If offline, use cached data and return early (don't set up listeners)
+          if (!isConnected) {
+            console.log('📴 Offline mode - using cached last messages');
+            return;
+          }
+        }
+      } catch (error) {
+        console.log('Error loading cached last messages in mergeStudents:', error);
+      }
+
+      // Attach last-message and read-receipt listeners per student (only if online)
+      if (!isConnected) return;
       for (const s of nextStudents) {
         const studentKey = s.studentIdNumber || s.studentId;
         const parentKey = user?.parentId || user?.uid;
@@ -166,7 +233,14 @@ function Messages() {
               const senderId = lastDoc?.senderId || null;
               const createdAt = lastDoc?.createdAt || null;
               const createdAtMs = createdAt?.toMillis ? createdAt.toMillis() : null;
-              setLastMessages((prev) => ({ ...prev, [s.linkId]: { text: last, senderId, createdAtMs } }));
+              setLastMessages((prev) => {
+                const updated = { ...prev, [s.linkId]: { text: last, senderId, createdAtMs } };
+                // Cache the updated lastMessages
+                try {
+                  cacheMessages(user.uid, updated);
+                } catch {}
+                return updated;
+              });
 
               // If a newer incoming message arrives, clear manual-read so the thread shows as unread
               try {
@@ -189,16 +263,6 @@ function Messages() {
               } catch {}
 
               // Notification sending is handled globally
-            },
-            (error) => {
-              const errorInfo = getNetworkErrorMessage(error);
-              if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-                setNetworkErrorTitle(errorInfo.title);
-                setNetworkErrorMessage(errorInfo.message);
-                setNetworkErrorColor(errorInfo.color);
-                setNetworkErrorVisible(true);
-                setTimeout(() => setNetworkErrorVisible(false), 5000);
-              }
             }
           );
           convUnsubsRef.current[s.linkId] = off;
@@ -213,61 +277,40 @@ function Messages() {
               const lastReadAt = data?.lastReadAt || null;
               const lastReadAtMs = lastReadAt?.toMillis ? lastReadAt.toMillis() : null;
               setReadReceipts((prev) => ({ ...prev, [s.linkId]: { lastReadAtMs } }));
-            },
-            (error) => {
-              const errorInfo = getNetworkErrorMessage(error);
-              if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-                setNetworkErrorTitle(errorInfo.title);
-                setNetworkErrorMessage(errorInfo.message);
-                setNetworkErrorColor(errorInfo.color);
-                setNetworkErrorVisible(true);
-                setTimeout(() => setNetworkErrorVisible(false), 5000);
-              }
             }
           );
           readUnsubsRef.current[s.linkId] = offRead;
         } catch {}
       }
     };
-    const unsubUid = onSnapshot(
-      qUid, 
-      (snap) => { try { mergeStudents(snap.docs); setLoadingLinks(false); } catch { setLoadingLinks(false); } },
-      (error) => {
-        const errorInfo = getNetworkErrorMessage(error);
-        if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
-        setLoadingLinks(false);
+
+      setLoadingLinks(true);
+      const unsubUid = onSnapshot(
+        qUid, 
+        (snap) => { try { mergeStudents(snap.docs); setLoadingLinks(false); } catch { setLoadingLinks(false); } }
+      );
+      let unsubCanonical = null;
+      if (canonicalId && canonicalId.includes('-')) {
+        const qCanon = query(
+          collection(db, 'parent_student_links'),
+          where('parentIdNumber', '==', canonicalId),
+          where('status', '==', 'active'),
+        );
+        unsubCanonical = onSnapshot(
+          qCanon, 
+          (snap) => { try { mergeStudents(snap.docs); } catch {} }
+        );
       }
-    );
-    let unsubCanonical = null;
-    if (canonicalId && canonicalId.includes('-')) {
-      const qCanon = query(
-        collection(db, 'parent_student_links'),
-        where('parentIdNumber', '==', canonicalId),
-        where('status', '==', 'active'),
-      );
-      unsubCanonical = onSnapshot(
-        qCanon, 
-        (snap) => { try { mergeStudents(snap.docs); } catch {} },
-        (error) => {
-          const errorInfo = getNetworkErrorMessage(error);
-          if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-            setNetworkErrorTitle(errorInfo.title);
-            setNetworkErrorMessage(errorInfo.message);
-            setNetworkErrorColor(errorInfo.color);
-            setNetworkErrorVisible(true);
-            setTimeout(() => setNetworkErrorVisible(false), 5000);
-          }
-        }
-      );
-    }
-    return () => { try { unsubUid && unsubUid(); } catch {} try { unsubCanonical && unsubCanonical(); } catch {} };
-  }, [user?.uid, user?.parentId]);
+      return () => {
+        try { unsubUid && unsubUid(); } catch {}
+        try { unsubCanonical && unsubCanonical(); } catch {}
+        try { Object.values(convUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
+        try { Object.values(readUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
+        convUnsubsRef.current = {};
+        readUnsubsRef.current = {};
+      };
+    })(); // End async IIFE
+  }, [user?.uid, user?.parentId, isConnected]);
 
   const conversationId = useMemo(() => {
     if (!user?.uid || !selectedStudent?.studentId) return null;
@@ -284,25 +327,20 @@ function Messages() {
       orderBy('createdAt', 'desc'),
       limit(50)
     );
+    // Only set up listener if online
+    if (!isConnected) {
+      setMessages([]);
+      return;
+    }
     const unsub = onSnapshot(
       msgsRef, 
       (snap) => {
         const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         setMessages(items);
-      },
-      (error) => {
-        const errorInfo = getNetworkErrorMessage(error);
-        if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
       }
     );
     return () => { try { unsub(); } catch {} };
-  }, [conversationId]);
+  }, [conversationId, isConnected]);
 
   const ensureConversation = async () => {
     if (!conversationId) return;
@@ -317,15 +355,6 @@ function Messages() {
       }, { merge: true });
     } catch (error) {
       console.error('Error ensuring conversation:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
       throw error;
     }
   };
@@ -345,15 +374,6 @@ function Messages() {
       setInput('');
     } catch (error) {
       console.error('Error sending message:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
     } finally {
       setSending(false);
     }
@@ -387,7 +407,7 @@ function Messages() {
               </View>
               <Text style={styles.emptyTitle}>No Messages Yet</Text>
               <Text style={styles.emptySubtext}>
-                You haven't linked any students to your account yet. Link your children to start messaging with them and stay connected.
+                You haven't linked any students to your account yet. Once you link your children to your account, you'll be able to send, receive messages and stay updated on important information.
               </Text>
             </View>
           </View>
@@ -480,18 +500,6 @@ function Messages() {
           </>
         )}
       </View>
-
-      {/* Network Error Modal */}
-      <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.fbModalCard}>
-            <View style={styles.fbModalContent}>
-              <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-              {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -594,14 +602,14 @@ const styles = StyleSheet.create({
   modalButtonText: { fontSize: 16, fontWeight: '600', color: '#6B7280' },
   modalButtonDanger: { backgroundColor: '#FEE2E2' },
   modalButtonDangerText: { color: '#b91c1c' },
-  contentContainer: { padding: wp(4), paddingBottom: hp(10), paddingTop: hp(6), flexGrow: 1 },
-  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: hp(1) },
+  contentContainer: { padding: 16, paddingBottom: 120, paddingTop: 50, flexGrow: 1 },
+  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: hp(5) },
   loadingText: { marginTop: hp(1.5), color: '#6B7280', fontSize: RFValue(16) },
-  emptyCard: { backgroundColor: '#fff', borderRadius: wp(3), padding: wp(4), alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: hp(0.75) }, shadowRadius: wp(3), elevation: 4, width: '100%', maxWidth: isTablet() ? wp(80) : wp(95) },
-  emptyIconWrap: { width: wp(10), height: wp(10), borderRadius: wp(5), backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: hp(1) },
-  emptyTitle: { fontSize: RFValue(16), fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: hp(0.5) },
-  emptySubtext: { fontSize: RFValue(12), color: '#6B7280', textAlign: 'center', lineHeight: RFValue(16), marginBottom: hp(1.5), paddingHorizontal: wp(4) },
+  emptyCard: { backgroundColor: '#fff', borderRadius: 8, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
+  emptyIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: 4 },
+  emptySubtext: { fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 16, marginBottom: 12 },
   // Network Error Modal styles
   modalOverlayCenter: { 
     flex: 1, 

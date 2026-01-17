@@ -17,14 +17,18 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheMessages, getCachedMessages, cacheConversationMessages, getCachedConversationMessages, getCachedLinkedParents, cacheLinkedParents } from '../../offline/storage';
+import { wp, hp, RFValue, isSmallDevice, isTablet } from '../../utils/responsive';
 
 const { width } = Dimensions.get('window');
 
 function Messages() {
   const navigation = useNavigation();
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const isFocused = useIsFocused();
   const [loadingLinks, setLoadingLinks] = useState(true);
   const [linkedParents, setLinkedParents] = useState([]);
@@ -43,11 +47,11 @@ function Messages() {
   const lastMessagesRef = useRef({});
   const manuallyReadRef = useRef({});
   const [manualReadLoaded, setManualReadLoaded] = useState(false);
-  const notifiedMsgIdsRef = useRef(new Set());
   const studentConvUnsubsRef = useRef({});
   const studentReadUnsubsRef = useRef({});
 
   const storageKey = useMemo(() => (user?.uid ? `studentManualRead_${user.uid}` : null), [user?.uid]);
+
 
   useEffect(() => { readReceiptsRef.current = readReceipts; }, [readReceipts]);
   useEffect(() => { lastMessagesRef.current = lastMessages; }, [lastMessages]);
@@ -98,24 +102,67 @@ function Messages() {
   useEffect(() => {
     if (!user?.uid) { setLinkedParents([]); setLoadingLinks(false); return; }
     
-    // Get student identifiers (both UID and student ID number)
-    const getStudentIdentifiers = () => {
-      const identifiers = [];
-      const uid = String(user?.uid || '').trim();
-      const studentNumber = String(user?.studentId || user?.studentID || '').trim();
-      if (uid) identifiers.push({ field: 'studentId', value: uid });
-      if (studentNumber) identifiers.push({ field: 'studentIdNumber', value: studentNumber });
-      return identifiers;
+    // Try to load cached data first (works offline) - following same pattern as Schedule/Alerts/Dashboard
+    const loadCachedData = async () => {
+      try {
+        // Load cached lastMessages
+        const cachedMessages = await getCachedMessages(user.uid);
+        if (cachedMessages && typeof cachedMessages === 'object') {
+          setLastMessages(cachedMessages);
+          console.log('✅ Last messages loaded from cache');
+        }
+      } catch (error) {
+        console.log('Error loading cached last messages:', error);
+      }
+      
+      // If offline, load cached linked parents and return early (skip Firestore listeners)
+      if (!isConnected) {
+        try {
+          const cachedLinkedParents = await getCachedLinkedParents(user.uid);
+          if (cachedLinkedParents && Array.isArray(cachedLinkedParents)) {
+            setLinkedParents(cachedLinkedParents);
+            setLinkedStudents([]); // Students require online queries, skip when offline
+            setLoadingLinks(false);
+            console.log('✅ Linked parents loaded from cache (offline mode)');
+            return true; // Indicate cached data was loaded
+          }
+        } catch (error) {
+          console.log('Error loading cached linked parents:', error);
+        }
+        // If no cached linked parents but offline, still show empty list
+        setLoadingLinks(false);
+        return true;
+      }
+      return false; // Indicate we need to fetch from Firestore
     };
     
-    const identifiers = getStudentIdentifiers();
-    if (identifiers.length === 0) {
-      setLinkedParents([]);
-      setLoadingLinks(false);
-      return;
-    }
-    
-    setLoadingLinks(true);
+    // Load cached data first, then conditionally set up listeners
+    (async () => {
+      const cachedLoaded = await loadCachedData();
+      // If cached data was loaded and we're offline, don't set up Firestore listeners
+      if (cachedLoaded) return;
+      
+      // Only set up Firestore listeners if online
+      if (!isConnected) return;
+      
+      // Get student identifiers (both UID and student ID number)
+      const getStudentIdentifiers = () => {
+        const identifiers = [];
+        const uid = String(user?.uid || '').trim();
+        const studentNumber = String(user?.studentId || user?.studentID || '').trim();
+        if (uid) identifiers.push({ field: 'studentId', value: uid });
+        if (studentNumber) identifiers.push({ field: 'studentIdNumber', value: studentNumber });
+        return identifiers;
+      };
+      
+      const identifiers = getStudentIdentifiers();
+      if (identifiers.length === 0) {
+        setLinkedParents([]);
+        setLoadingLinks(false);
+        return;
+      }
+      
+      setLoadingLinks(true);
     
     // Create queries for each identifier
     const queries = identifiers.map(({ field, value }) =>
@@ -144,28 +191,36 @@ function Messages() {
       const parentsArray = Array.from(allParents.values());
       setLinkedParents(parentsArray);
       
-      // Find other students linked to the same parents
-      const currentStudentId = user?.studentId || user?.uid;
-      const currentStudentUid = user?.uid;
-      const studentsMap = new Map();
+      // Cache linked parents for offline access
+      try {
+        cacheLinkedParents(user.uid, parentsArray);
+      } catch (error) {
+        console.log('Error caching linked parents:', error);
+      }
       
-      // For each parent, find all students linked to that parent
-      for (const p of parentsArray) {
-        const parentKey = p.parentIdNumber || p.parentId;
-        if (!parentKey) continue;
+      // Find other students linked to the same parents (only if online)
+      const studentsMap = new Map();
+      if (isConnected) {
+        const currentStudentId = user?.studentId || user?.uid;
+        const currentStudentUid = user?.uid;
         
-        try {
-          // Query for all students linked to this parent
-          const parentQueries = [
-            query(collection(db, 'parent_student_links'), where('parentId', '==', p.parentId), where('status', '==', 'active')),
-          ];
-          if (p.parentIdNumber) {
-            parentQueries.push(
-              query(collection(db, 'parent_student_links'), where('parentIdNumber', '==', p.parentIdNumber), where('status', '==', 'active'))
-            );
-          }
+        // For each parent, find all students linked to that parent
+        for (const p of parentsArray) {
+          const parentKey = p.parentIdNumber || p.parentId;
+          if (!parentKey) continue;
           
-          const allSnaps = await Promise.all(parentQueries.map(q => getDocs(q)));
+          try {
+            // Query for all students linked to this parent
+            const parentQueries = [
+              query(collection(db, 'parent_student_links'), where('parentId', '==', p.parentId), where('status', '==', 'active')),
+            ];
+            if (p.parentIdNumber) {
+              parentQueries.push(
+                query(collection(db, 'parent_student_links'), where('parentIdNumber', '==', p.parentIdNumber), where('status', '==', 'active'))
+              );
+            }
+            
+            const allSnaps = await Promise.all(parentQueries.map(q => getDocs(q)));
           for (const snap of allSnaps) {
             for (const linkDoc of snap.docs) {
               const linkData = linkDoc.data();
@@ -217,11 +272,12 @@ function Messages() {
           console.log('Error loading linked students for parent:', error);
         }
       }
+      }
       
       const studentsArray = Array.from(studentsMap.values());
       setLinkedStudents(studentsArray);
       
-      // Reset last messages and listeners when parents change
+      // Reset listeners when parents change (but preserve lastMessages state)
       try { Object.values(convUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
       try { Object.values(readUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
       try { Object.values(studentConvUnsubsRef.current || {}).forEach((fn) => { try { fn(); } catch {} }); } catch {}
@@ -230,11 +286,32 @@ function Messages() {
       readUnsubsRef.current = {};
       studentConvUnsubsRef.current = {};
       studentReadUnsubsRef.current = {};
-      setLastMessages({});
-      setReadReceipts({});
+      // Don't reset readReceipts and lastMessages - preserve them for offline mode
       
-      // Attach last-message listeners per parent
-      for (const p of parentsArray) {
+      // Try to load cached lastMessages (works offline)
+      // This ensures cached messages are available even when offline
+      try {
+        const cachedData = await getCachedMessages(user.uid);
+        if (cachedData && typeof cachedData === 'object') {
+          setLastMessages(cachedData);
+          console.log('✅ Last messages loaded from cache in updateCombinedResults');
+          // If offline, use cached data and return early (don't set up listeners)
+          if (!isConnected) {
+            console.log('📴 Offline mode - using cached last messages');
+            if (!selectedParent && parentsArray.length > 0) setSelectedParent(parentsArray[0]);
+            if (initializedSet.size >= queries.length) {
+              setLoadingLinks(false);
+            }
+            return;
+          }
+        }
+      } catch (error) {
+        console.log('Error loading cached last messages in updateCombinedResults:', error);
+      }
+      
+      // Attach last-message listeners per parent (only if online)
+      if (isConnected) {
+        for (const p of parentsArray) {
         const studentKey = user?.studentId || user?.uid;
         const parentKey = p.parentIdNumber || p.parentId;
         if (!studentKey || !parentKey) continue;
@@ -251,26 +328,14 @@ function Messages() {
             const senderId = lastDoc?.senderId || null;
             const createdAt = lastDoc?.createdAt || null;
             const createdAtMs = createdAt?.toMillis ? createdAt.toMillis() : null;
-            setLastMessages((prev) => ({ ...prev, [p.linkId]: { text: last, senderId, createdAtMs } }));
-            // Do not auto-clear manual read; once read manually, stay read
-            try {
-              const msgId = mSnap.docs[0]?.id;
-              if (msgId && senderId && senderId !== user?.uid) {
-                const key = `${convId}:${msgId}`;
-                if (!notifiedMsgIdsRef.current.has(key)) {
-                  await Notifications.scheduleNotificationAsync({
-                    content: {
-                      title: `New message from ${p.parentName || 'Parent'}`,
-                      body: last || 'Open to view',
-                      sound: 'default',
-                      data: { convId, linkId: p.linkId },
-                    },
-                    trigger: null,
-                  });
-                  notifiedMsgIdsRef.current.add(key);
-                }
-              }
-            } catch {}
+            setLastMessages((prev) => {
+              const updated = { ...prev, [p.linkId]: { text: last, senderId, createdAtMs } };
+              // Cache the updated lastMessages
+              try {
+                cacheMessages(user.uid, updated);
+              } catch {}
+              return updated;
+            });
           });
           convUnsubsRef.current[p.linkId] = off;
         } catch {}
@@ -287,9 +352,11 @@ function Messages() {
           readUnsubsRef.current[p.linkId] = offRead;
         } catch {}
       }
+      }
       
-      // Attach last-message listeners per student
-      for (const s of studentsArray) {
+      // Attach last-message listeners per student (only if online)
+      if (isConnected) {
+        for (const s of studentsArray) {
         const currentKey = user?.studentId || user?.uid;
         const otherKey = s.studentIdNumber || s.studentId;
         if (!currentKey || !otherKey) continue;
@@ -310,25 +377,14 @@ function Messages() {
             const senderId = lastDoc?.senderId || null;
             const createdAt = lastDoc?.createdAt || null;
             const createdAtMs = createdAt?.toMillis ? createdAt.toMillis() : null;
-            setLastMessages((prev) => ({ ...prev, [s.linkId]: { text: last, senderId, createdAtMs } }));
-            try {
-              const msgId = mSnap.docs[0]?.id;
-              if (msgId && senderId && senderId !== user?.uid) {
-                const key = `${convId}:${msgId}`;
-                if (!notifiedMsgIdsRef.current.has(key)) {
-                  await Notifications.scheduleNotificationAsync({
-                    content: {
-                      title: `New message from ${s.studentName || 'Student'}`,
-                      body: last || 'Open to view',
-                      sound: 'default',
-                      data: { convId, linkId: s.linkId },
-                    },
-                    trigger: null,
-                  });
-                  notifiedMsgIdsRef.current.add(key);
-                }
-              }
-            } catch {}
+            setLastMessages((prev) => {
+              const updated = { ...prev, [s.linkId]: { text: last, senderId, createdAtMs } };
+              // Cache the updated lastMessages
+              try {
+                cacheMessages(user.uid, updated);
+              } catch {}
+              return updated;
+            });
           });
           studentConvUnsubsRef.current[s.linkId] = off;
         } catch {}
@@ -343,6 +399,7 @@ function Messages() {
           });
           studentReadUnsubsRef.current[s.linkId] = offRead;
         } catch {}
+        }
       }
       
       if (!selectedParent && parentsArray.length > 0) setSelectedParent(parentsArray[0]);
@@ -399,7 +456,8 @@ function Messages() {
       studentConvUnsubsRef.current = {};
       studentReadUnsubsRef.current = {};
     };
-  }, [user?.uid, user?.studentId]);
+    })(); // End async IIFE
+  }, [user?.uid, user?.studentId, isConnected]);
 
   const conversationId = useMemo(() => {
     if (!user?.uid || !selectedParent?.parentId) return null;
@@ -408,20 +466,9 @@ function Messages() {
     return `${studentKey}-${parentKey}`;
   }, [user?.uid, user?.studentId, selectedParent?.parentId, selectedParent?.parentIdNumber]);
 
-  // Subscribe to messages for the selected conversation
-  useEffect(() => {
-    if (!conversationId) { setMessages([]); return; }
-    const msgsRef = query(
-      collection(db, 'conversations', conversationId, 'messages'),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    const unsub = onSnapshot(msgsRef, (snap) => {
-      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setMessages(items);
-    });
-    return () => { try { unsub(); } catch {} };
-  }, [conversationId]);
+  // Note: Conversation messages are cached in StudentConversation.js component
+  // This screen only shows the list of contacts, not the actual conversation
+  // The conversation caching is handled when navigating to StudentConversation screen
 
   const ensureConversation = async () => {
     if (!conversationId) return;
@@ -507,7 +554,7 @@ function Messages() {
               </View>
               <Text style={styles.emptyTitle}>No Messages Yet</Text>
               <Text style={styles.emptySubtext}>
-                You haven't linked any parents to your account yet. Link with your parents to start messaging and stay connected.
+                You haven't linked any parents to your account yet. Once you link with your parents, you'll be able to send, receive messages and stay updated on important information.
               </Text>
             </View>
           </View>
@@ -625,18 +672,18 @@ function Messages() {
 
 const styles = StyleSheet.create({
   wrapper: { flex: 1, backgroundColor: '#F9FAFB' },
-  listWrap: { flex: 1, paddingVertical: 10, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 90 },
+  listWrap: { flex: 1, paddingVertical: 10, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
   centerRow: { flexDirection: 'row', alignItems: 'center' },
   loadingText: { marginLeft: 8, color: '#6B7280' },
-  threadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#D1D5DB' },
-  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
-  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8 },
-  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginRight: 12, borderWidth: 1, borderColor: '#DBEAFE' },
-  avatarText: { color: '#2563EB', fontWeight: '800' },
-  threadName: { fontSize: 16, fontWeight: '700', color: '#111827' },
-  threadSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  threadSubLast: { fontSize: 12, color: '#2563EB', marginTop: 2, fontWeight: '700' },
-  threadSubRead: { fontSize: 12, color: '#6B7280', marginTop: 2, fontWeight: '400' },
+  threadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: hp(1.5), paddingHorizontal: wp(3), borderBottomWidth: 1, borderBottomColor: '#D1D5DB' },
+  threadRowRead: { backgroundColor: '#F3F4F6', borderRadius: wp(2.5), paddingHorizontal: wp(2) },
+  threadRowPressed: { backgroundColor: '#F3F4F6', borderRadius: wp(2.5), paddingHorizontal: wp(2) },
+  avatar: { width: wp(11), height: wp(11), borderRadius: wp(5.5), backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginRight: wp(3), borderWidth: 1, borderColor: '#DBEAFE' },
+  avatarText: { color: '#2563EB', fontWeight: '800', fontSize: RFValue(isSmallDevice() ? 14 : 16) },
+  threadName: { fontSize: RFValue(16), fontWeight: '700', color: '#111827' },
+  threadSub: { fontSize: RFValue(12), color: '#6B7280', marginTop: hp(0.25) },
+  threadSubLast: { fontSize: RFValue(12), color: '#2563EB', marginTop: hp(0.25), fontWeight: '700' },
+  threadSubRead: { fontSize: RFValue(12), color: '#6B7280', marginTop: hp(0.25), fontWeight: '400' },
   separator: { height: 2, backgroundColor: '#D1D5DB' },
   centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyText: { color: '#6B7280' },
@@ -653,9 +700,9 @@ const styles = StyleSheet.create({
   modalButtonDangerText: { color: '#b91c1c' },
   contentContainer: { padding: 16, paddingBottom: 120, paddingTop: 50, flexGrow: 1 },
   centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16 },
-  loadingText: { marginTop: 12, color: '#6B7280', fontSize: 16 },
-  emptyCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
+  loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: hp(5) },
+  loadingText: { marginTop: hp(1.5), color: '#6B7280', fontSize: RFValue(16) },
+  emptyCard: { backgroundColor: '#fff', borderRadius: 8, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', shadowColor: '#0F172A', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 6 }, shadowRadius: 12, elevation: 4, width: '100%' },
   emptyIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginTop: 0, marginBottom: 4 },
   emptySubtext: { fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 16, marginBottom: 12 },
@@ -664,22 +711,22 @@ const styles = StyleSheet.create({
   sectionTightBelow: { marginBottom: 6 },
   blockCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: wp(3),
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    padding: 12,
+    padding: wp(3),
     shadowColor: '#000',
     shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: hp(0.25) },
+    shadowRadius: wp(1),
     marginTop: 0,
   },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  sectionTitle: { fontSize: 30, fontWeight: '700', color: '#111827', marginRight: 8, marginBottom: 5, marginTop: 10 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: hp(2) },
+  sectionTitle: { fontSize: RFValue(isSmallDevice() ? 24 : 30), fontWeight: '700', color: '#111827', marginRight: wp(2), marginBottom: hp(0.6), marginTop: hp(1.2) },
   infoRow: { flexDirection: 'row', alignItems: 'center' },
-  infoIconWrap: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F0F9FF', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  infoTitle: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 4 },
-  infoSub: { fontSize: 13, color: '#6B7280' },
+  infoIconWrap: { width: wp(10), height: wp(10), borderRadius: wp(5), backgroundColor: '#F0F9FF', alignItems: 'center', justifyContent: 'center', marginRight: wp(3) },
+  infoTitle: { fontSize: RFValue(14), fontWeight: '700', color: '#111827', marginBottom: hp(0.5) },
+  infoSub: { fontSize: RFValue(13), color: '#6B7280' },
 });
 
 export default Messages;

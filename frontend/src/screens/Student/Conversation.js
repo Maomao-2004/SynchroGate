@@ -5,12 +5,15 @@ import { AuthContext } from '../../contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, orderBy, onSnapshot, addDoc, doc, setDoc, serverTimestamp, limit, getDocs, deleteDoc, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { withNetworkErrorHandling, getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheConversationMessages, getCachedConversationMessages, queuePendingMessage, getPendingMessages, removePendingMessage, clearPendingMessages } from '../../offline/storage';
 
 export default function Conversation() {
   const route = useRoute();
   const navigation = useNavigation();
   const { user } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const { parentId, parentIdNumber, parentName, studentId, studentIdNumber, studentName } = route.params || {};
 
   const [messages, setMessages] = useState([]);
@@ -23,13 +26,10 @@ export default function Conversation() {
   const [feedbackVisible, setFeedbackVisible] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(false);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
   const [linkedOnText, setLinkedOnText] = useState('');
   const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [pendingMessage, setPendingMessage] = useState(null);
+  const [queuedMessages, setQueuedMessages] = useState([]);
 
   const isStudentConversation = !!(studentId || studentIdNumber);
   const displayName = isStudentConversation ? (studentName || 'Student') : (parentName || 'Parent');
@@ -54,12 +54,65 @@ export default function Conversation() {
 
   useEffect(() => {
     if (!conversationId) { setMessages([]); return; }
+    
+    // Try to load from cache first (works offline)
+    const loadCachedMessages = async () => {
+      try {
+        const cachedData = await getCachedConversationMessages(conversationId);
+        if (cachedData && Array.isArray(cachedData)) {
+          // Convert timestamp objects back to proper format
+          const processedMessages = cachedData.map(msg => ({
+            ...msg,
+            createdAt: msg.createdAt?.toDate ? msg.createdAt : (typeof msg.createdAt === 'string' ? new Date(msg.createdAt) : msg.createdAt),
+          }));
+          setMessages(processedMessages);
+          // If offline, use cached data and return early
+          if (!isConnected) {
+            console.log('📴 Offline mode - using cached messages');
+            return;
+          }
+        }
+      } catch (error) {
+        console.log('Error loading cached messages:', error);
+      }
+    };
+    
+    loadCachedMessages();
+    
+    // Load queued messages when component mounts
+    const loadQueuedMessages = async () => {
+      try {
+        const queued = await getPendingMessages(conversationId);
+        if (queued && queued.length > 0) {
+          setQueuedMessages(queued);
+          console.log(`📬 Loaded ${queued.length} queued message(s)`);
+        }
+      } catch (error) {
+        console.log('Error loading queued messages:', error);
+      }
+    };
+    
+    loadQueuedMessages();
+    
+    // Only set up real-time listener if online
+    if (!isConnected) {
+      return;
+    }
+    
     const msgsRef = query(collection(db, 'conversations', conversationId, 'messages'), orderBy('createdAt', 'desc'), limit(50));
     const unsub = onSnapshot(
       msgsRef, 
       async (snap) => {
         const items = snap.docs.map(d => ({ id: d.id, ...d.data(), _ref: d.ref }));
         setMessages(items);
+        
+        // Cache the messages for offline access (only store essential data, not refs)
+        try {
+          const messagesToCache = items.map(({ _ref, ...msg }) => msg);
+          await cacheConversationMessages(conversationId, messagesToCache);
+        } catch (cacheError) {
+          console.log('Error caching messages:', cacheError);
+        }
         // Delivery/Seen acknowledgements: mark other user's messages as delivered/seen
         const updates = [];
         for (const m of items) {
@@ -75,22 +128,17 @@ export default function Conversation() {
         }
       },
       (error) => {
-        const errorInfo = getNetworkErrorMessage(error);
-        if (error?.code?.includes('unavailable') || error?.code?.includes('deadline-exceeded') || error?.message?.toLowerCase().includes('network') || error?.message?.toLowerCase().includes('connection')) {
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
+        // Silently handle network errors - no modal shown
+        console.log('Network error in conversation listener:', error);
       }
     );
     return () => { try { unsub(); } catch {} };
-  }, [conversationId]);
+  }, [conversationId, isConnected]);
 
   useEffect(() => {
     const loadLinkedDate = async () => {
       if (!conversationId) { setLinkedOnText(''); return; }
+      if (!isConnected) { setLinkedOnText(''); return; } // Skip when offline
       try {
         const convRef = doc(db, 'conversations', conversationId);
         const convSnap = await getDoc(convRef);
@@ -105,20 +153,11 @@ export default function Conversation() {
         }
       } catch (e) {
         console.error('Error loading linked date:', e);
-        // Only show network error modal for actual network errors
-        if (e?.code?.includes('unavailable') || e?.code?.includes('network') || e?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: e.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setLinkedOnText('');
       }
     };
     loadLinkedDate();
-  }, [conversationId]);
+  }, [conversationId, isConnected]);
 
   useEffect(() => {
     if (feedbackVisible) {
@@ -129,6 +168,7 @@ export default function Conversation() {
 
   const ensureConversation = async () => {
     if (!conversationId) return;
+    if (!isConnected) return; // Skip when offline
     try {
       const convRef = doc(db, 'conversations', conversationId);
       
@@ -167,51 +207,84 @@ export default function Conversation() {
       }
     } catch (e) {
       console.error('Error ensuring conversation:', e);
-      // Only show network error modal for actual network errors
-      if (e?.code?.includes('unavailable') || e?.code?.includes('network') || e?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: e.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      }
+      throw e; // Re-throw to be handled by caller
     }
   };
 
   // Removed: sendChatAlertToCounterpart function - messages should not be saved as notifications in alerts collection
   // Messages are handled separately in the conversations collection and should not appear in alerts
 
+  // Load queued messages for current conversation to display in UI
+  // Note: Auto-sending is handled globally in NetworkContext when connection is restored
+  useEffect(() => {
+    if (!conversationId) return;
+    
+    const loadQueuedMessages = async () => {
+      try {
+        const queued = await getPendingMessages(conversationId);
+        if (queued && queued.length > 0) {
+          setQueuedMessages(queued);
+        } else {
+          setQueuedMessages([]);
+        }
+      } catch (error) {
+        console.log('Error loading queued messages:', error);
+      }
+    };
+    
+    loadQueuedMessages();
+    
+    // Periodically check for queue updates to reflect when global sender removes messages
+    const interval = setInterval(() => {
+      loadQueuedMessages();
+    }, 2000); // Check every 2 seconds
+    
+    return () => clearInterval(interval);
+  }, [conversationId, isConnected]);
+
   const sendMessage = async () => {
     const text = String(input || '').trim();
     if (!text || !conversationId || !user?.uid) return;
+    
+    const tempId = `local-${Date.now()}`;
+    const tempMsg = { id: tempId, senderId: user.uid, text, createdAt: new Date(), status: 'sending', _local: true };
+    
+    // If offline, queue the message
+    if (!isConnected) {
+      try {
+        setSending(true);
+        setInput('');
+        // Add to queued messages state
+        const newQueuedMsg = { ...tempMsg, queuedAt: Date.now() };
+        setQueuedMessages(prev => [...prev, newQueuedMsg]);
+        // Store in AsyncStorage
+        await queuePendingMessage(conversationId, newQueuedMsg);
+        console.log('📴 Message queued for offline sending');
+        // Show as pending message in UI
+        setPendingMessage(tempMsg);
+        setTimeout(() => setPendingMessage(null), 500);
+      } catch (error) {
+        console.error('Error queueing message:', error);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+    
+    // If online, send immediately
     try {
       setSending(true);
-      // optimistic local pending message
-      const tempId = `local-${Date.now()}`;
-      const tempMsg = { id: tempId, senderId: user.uid, text, createdAt: new Date(), status: 'sending', _local: true };
       setPendingMessage(tempMsg);
       await ensureConversation();
       const msgsCol = collection(db, 'conversations', conversationId, 'messages');
       await addDoc(msgsCol, { senderId: user.uid, text, createdAt: serverTimestamp(), status: 'sent' });
       setInput('');
-      // Removed: sendChatAlertToCounterpart call - messages should not be saved as notifications
       // clear pending on success after a short delay (snapshot will render real one)
       setTimeout(() => setPendingMessage(null), 500);
     } catch (e) {
       console.error('Error sending message:', e);
-      // Only show network error modal for actual network errors
-      if (e?.code?.includes('unavailable') || e?.code?.includes('network') || e?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: e.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        // mark pending as error
-        setPendingMessage((pm) => pm ? { ...pm, status: 'error' } : pm);
-      }
+      // mark pending as error
+      setPendingMessage((pm) => pm ? { ...pm, status: 'error' } : pm);
     } finally { setSending(false); }
   };
 
@@ -290,6 +363,13 @@ export default function Conversation() {
 
   const performDelete = async () => {
     if (!conversationId) return;
+    if (!isConnected) {
+      setFeedbackText('Cannot delete conversation while offline.');
+      setFeedbackSuccess(false);
+      setConfirmVisible(false);
+      setFeedbackVisible(true);
+      return;
+    }
     try {
       setDeleting(true);
       // Delete all messages under the conversation
@@ -299,22 +379,14 @@ export default function Conversation() {
       await Promise.all(deletions);
       // Delete the conversation doc itself
       await deleteDoc(doc(db, 'conversations', conversationId));
+      // Clear queued messages for this conversation
+      await clearPendingMessages(conversationId);
       setFeedbackText('Conversation deleted successfully.');
       setFeedbackSuccess(true);
     } catch (e) {
       console.error('Error deleting conversation:', e);
-      // Only show network error modal for actual network errors
-      if (e?.code?.includes('unavailable') || e?.code?.includes('network') || e?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: e.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        setFeedbackText('Failed to delete conversation. Please try again.');
-        setFeedbackSuccess(false);
-      }
+      setFeedbackText('Failed to delete conversation. Please try again.');
+      setFeedbackSuccess(false);
     } finally {
       // Close confirm modal immediately after showing feedback
       setConfirmVisible(false);
@@ -323,6 +395,7 @@ export default function Conversation() {
       setMenuOpen(false);
       // Reset local state; snapshot will also update
       setMessages([]);
+      setQueuedMessages([]);
     }
   };
 
@@ -352,7 +425,7 @@ export default function Conversation() {
       ) : (
         <FlatList
           ref={messagesRef}
-          data={pendingMessage ? [pendingMessage, ...messages] : messages}
+          data={[...(pendingMessage ? [pendingMessage] : []), ...queuedMessages, ...messages]}
           inverted
           keyExtractor={(it) => it.id}
           contentContainerStyle={{ padding: 12, paddingBottom: 12 }}
@@ -418,17 +491,6 @@ export default function Conversation() {
         </View>
       </Modal>
 
-      {/* Network Error Modal */}
-      <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.fbModalCard}>
-            <View style={styles.fbModalContent}>
-              <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-              {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }

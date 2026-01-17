@@ -15,12 +15,13 @@ import {
 } from 'react-native';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { AuthContext } from '../../contexts/AuthContext';
+import { NetworkContext } from '../../contexts/NetworkContext';
 import { Ionicons } from '@expo/vector-icons';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collection, query, where, getDocs, doc, getDoc, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { cacheDashboardData, getCachedDashboardData, cacheLinkedStudents, getCachedLinkedStudents } from '../../offline/storage';
 import { wp, hp, fontSizes, responsiveStyles, getResponsiveDimensions } from '../../utils/responsive';
 
 const { width } = Dimensions.get('window');
@@ -29,6 +30,8 @@ const UPCOMING_CARD_HEIGHT = 152;
 
 const Dashboard = () => {
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   const navigation = useNavigation();
   const isFocused = useIsFocused();
 
@@ -50,10 +53,6 @@ const Dashboard = () => {
   const [upcomingIndex, setUpcomingIndex] = useState(0);
   const [upcomingContainerWidth, setUpcomingContainerWidth] = useState(width - 56);
   const [isLandscape, setIsLandscape] = useState(dimensions.isLandscape);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
 
   const scannedInTodayCount = useMemo(() => {
     if (!Array.isArray(allLogs) || allLogs.length === 0) return 0;
@@ -167,6 +166,46 @@ const Dashboard = () => {
         setStudentsLoading(false);
         return; 
       }
+      
+      // Try to load cached data first (works offline) - following same pattern as Student screens
+      const loadCachedData = async () => {
+        try {
+          const cachedLinkedStudents = await getCachedLinkedStudents(user.uid);
+          if (cachedLinkedStudents && Array.isArray(cachedLinkedStudents)) {
+            // Convert cached format to Dashboard format
+            const formatted = cachedLinkedStudents.map(s => ({
+              id: s.studentId || s.id,
+              firstName: s.studentName || s.firstName || '',
+              lastName: '',
+              studentId: s.studentIdNumber || s.studentId || '',
+              relationship: s.relationship || '',
+              linkedAt: s.linkedAt || new Date().toISOString()
+            }));
+            setStudents(formatted);
+            console.log('✅ Linked students loaded from cache (offline mode)');
+            // If offline, use cached data and return early
+            if (!isConnected) {
+              setStudentsLoading(false);
+              return true; // Indicate cached data was loaded
+            }
+          }
+        } catch (error) {
+          console.log('Error loading cached linked students:', error);
+        }
+        return false; // Indicate we need to fetch from Firestore
+      };
+      
+      // Load cached data first, then conditionally fetch from Firestore
+      const cachedLoaded = await loadCachedData();
+      // If cached data was loaded and we're offline, don't fetch from Firestore
+      if (cachedLoaded && !isConnected) return;
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setStudentsLoading(false);
+        return;
+      }
+      
       setStudentsLoading(true);
       try {
         console.log('Loading linked students for parent:', user.uid);
@@ -202,24 +241,29 @@ const Dashboard = () => {
         collect(snap2.docs);
         console.log('Collected students:', collected);
         setStudents(collected);
+        
+        // Cache linked students for offline access
+        try {
+          const studentsForCache = collected.map(s => ({
+            studentId: s.id,
+            studentIdNumber: s.studentId,
+            studentName: s.firstName,
+            relationship: s.relationship,
+            linkedAt: s.linkedAt
+          }));
+          cacheLinkedStudents(user.uid, studentsForCache);
+        } catch (error) {
+          console.log('Error caching linked students:', error);
+        }
       } catch (error) {
         console.error('Error loading students:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setStudents([]);
       } finally {
         setStudentsLoading(false);
       }
     };
     if (isFocused) loadStudents();
-  }, [isFocused, user?.uid, user?.parentId]);
+  }, [isFocused, user?.uid, user?.parentId, isConnected]);
 
   // Load today's schedule count for all linked students
   useEffect(() => {
@@ -229,6 +273,13 @@ const Dashboard = () => {
         setScheduleLoading(false);
         return; 
       }
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setScheduleLoading(false);
+        return;
+      }
+      
       setScheduleLoading(true);
       try {
         console.log('Loading today\'s schedules for students:', students);
@@ -264,15 +315,6 @@ const Dashboard = () => {
         setTodayScheduleCount(totalCount);
       } catch (error) {
         console.error('Error loading today\'s schedules:', error);
-        // Only show network error modal for actual network errors
-        if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-          const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-          setNetworkErrorTitle(errorInfo.title);
-          setNetworkErrorMessage(errorInfo.message);
-          setNetworkErrorColor(errorInfo.color);
-          setNetworkErrorVisible(true);
-          setTimeout(() => setNetworkErrorVisible(false), 5000);
-        }
         setTodayScheduleCount(0);
       } finally {
         setScheduleLoading(false);
@@ -285,7 +327,7 @@ const Dashboard = () => {
       setTodayScheduleCount(0);
       setScheduleLoading(false);
     }
-  }, [isFocused, students]);
+  }, [isFocused, students, isConnected]);
 
   // Load ongoing classes (Class Happening Now) count across linked students
   useEffect(() => {
@@ -295,6 +337,13 @@ const Dashboard = () => {
         setOngoingLoading(false);
         return;
       }
+      
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setOngoingLoading(false);
+        return;
+      }
+      
       setOngoingLoading(true);
       try {
         const isNowWithin = (timeRange) => {
@@ -386,7 +435,7 @@ const Dashboard = () => {
       setOngoingClassesCount(0);
       setOngoingLoading(false);
     }
-  }, [isFocused, students, user?.uid]);
+  }, [isFocused, students, user?.uid, isConnected]);
 
   // Re-render at midnight to clear today's activity section automatically
   useEffect(() => {
@@ -402,9 +451,9 @@ const Dashboard = () => {
 
   const currentDayKey = new Date().toDateString();
 
-  // Subscribe to attendance logs for all linked students and aggregate
+  // Subscribe to attendance logs for all linked students and aggregate (only when online)
   useEffect(() => {
-    if (!isFocused || students.length === 0) { setAllLogs([]); return; }
+    if (!isFocused || students.length === 0 || !isConnected) { setAllLogs([]); return; }
     const unsubscribes = [];
     // Keep a temp map of logs per student to avoid race conditions
     const studentIdToLogs = {};
@@ -491,7 +540,7 @@ const Dashboard = () => {
     });
 
     return () => { unsubscribes.forEach(u => { try { u?.(); } catch {} }); };
-  }, [isFocused, students, currentDayKey]);
+  }, [isFocused, students, currentDayKey, isConnected]);
 
   // Build upcoming schedules (ongoing first if present, then next 2 upcoming)
   useEffect(() => {
@@ -548,7 +597,7 @@ const Dashboard = () => {
     };
 
     const compute = async () => {
-      if (!students || students.length === 0) { setUpcomingByStudent({}); return; }
+      if (!students || students.length === 0 || !isConnected) { setUpcomingByStudent({}); return; }
       const nextMap = {};
       for (const s of students) {
         try {
@@ -581,11 +630,15 @@ const Dashboard = () => {
       setUpcomingByStudent(nextMap);
     };
     compute();
-  }, [students, isFocused]);
+  }, [students, isFocused, isConnected]);
 
   // Load latest 3 events from announcements (category 'events')
   useEffect(() => {
     const load = async () => {
+      if (!isConnected) {
+        setLatestEvents([]);
+        return;
+      }
       try {
         const announcementsRef = collection(db, 'announcements');
         const q = query(announcementsRef, orderBy('createdAt', 'desc'));
@@ -600,7 +653,7 @@ const Dashboard = () => {
       } catch { setLatestEvents([]); }
     };
     if (isFocused) load();
-  }, [isFocused]);
+  }, [isFocused, isConnected]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -1113,7 +1166,7 @@ const Dashboard = () => {
         {!studentsLoading && students.length === 0 && (
           <View style={styles.emptyStateContainer}>
             <View style={styles.emptyCard}>
-              <View style={styles.emptyIconWrap}>
+              <View style={[styles.emptyIconWrap, { backgroundColor: '#FEE2E2' }]}>
                 <Ionicons name="school-outline" size={20} color="#EF4444" />
               </View>
               <Text style={styles.emptyTitle}>No Linked Students</Text>
@@ -1167,17 +1220,6 @@ const Dashboard = () => {
         </View>
     </Modal>
 
-    {/* Network Error Modal */}
-    <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-      <View style={styles.modalOverlayCenter}>
-        <View style={styles.fbModalCard}>
-          <View style={styles.fbModalContent}>
-            <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-            {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-          </View>
-        </View>
-      </View>
-    </Modal>
   </>);
 };
 
@@ -1689,7 +1731,7 @@ const styles = StyleSheet.create({
   },
   emptyCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
@@ -1704,7 +1746,7 @@ const styles = StyleSheet.create({
   emptyIconWrap: {
     width: 40,
     height: 40,
-    borderRadius: 8,
+    borderRadius: 20,
     backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1728,6 +1770,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#111827',
+    marginTop: 0,
     marginBottom: 4,
   },
   emptySubtext: {
@@ -1820,9 +1863,10 @@ const styles = StyleSheet.create({
   },
   // Empty state styles (mirrored from Student Dashboard)
   emptyStateContainer: { 
-    marginTop: 8,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 8,
     width: '100%',
   },
   loadingStateContainer: { 

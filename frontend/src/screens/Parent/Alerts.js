@@ -31,7 +31,8 @@ import {
 } from 'firebase/firestore';
 import { onSnapshot } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
-import { getNetworkErrorMessage } from '../../utils/networkErrorHandler';
+import { NetworkContext } from '../../contexts/NetworkContext';
+import { cacheAlerts, getCachedAlerts } from '../../offline/storage';
 // Removed: sendAlertPushNotification import - backend handles all push notifications automatically
 import { updateLinkFcmTokens, getLinkFcmTokens } from '../../utils/linkFcmTokenManager';
 import { generateAndSavePushToken } from '../../utils/pushTokenGenerator';
@@ -44,6 +45,8 @@ const Alerts = () => {
   const navigation = useNavigation();
   const isFocused = useIsFocused();
   const { user, logout } = useContext(AuthContext);
+  const networkContext = useContext(NetworkContext);
+  const isConnected = networkContext?.isConnected ?? true;
   
   const [alerts, setAlerts] = useState([]);
   const [filter, setFilter] = useState('all'); // all | unread | read
@@ -56,10 +59,6 @@ const Alerts = () => {
   const [feedbackVisible, setFeedbackVisible] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackSuccess, setFeedbackSuccess] = useState(true);
-  const [networkErrorVisible, setNetworkErrorVisible] = useState(false);
-  const [networkErrorTitle, setNetworkErrorTitle] = useState('');
-  const [networkErrorMessage, setNetworkErrorMessage] = useState('');
-  const [networkErrorColor, setNetworkErrorColor] = useState('#DC2626');
   const [actionLoading, setActionLoading] = useState({ id: null, action: null });
   const [markingAsRead, setMarkingAsRead] = useState(false);
   const [scheduleModalVisible, setScheduleModalVisible] = useState(false);
@@ -134,6 +133,25 @@ const Alerts = () => {
       return;
     }
     
+    // Get parent document ID first (needed for cache key)
+    const parentDocId = await getParentDocId();
+    
+    // Try to load from cache first (works offline)
+    try {
+      const cachedData = await getCachedAlerts(parentDocId);
+      if (cachedData) {
+        setAlerts(cachedData);
+        // If offline, use cached data and return early
+        if (!isConnected) {
+          console.log('📴 Offline mode - using cached alerts');
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Error loading cached alerts:', error);
+    }
+    
     try {
       setLoading(true);
       
@@ -142,8 +160,13 @@ const Alerts = () => {
       
       const allAlerts = [];
       
+      // Only fetch from Firestore if online
+      if (!isConnected) {
+        setLoading(false);
+        return;
+      }
+      
       // Get parent alerts using parent document ID
-      const parentDocId = await getParentDocId();
       console.log('🔍 PARENT ALERTS: Loading alerts for parent ID:', parentDocId);
       const parentAlertsRef = doc(db, 'parent_alerts', parentDocId);
       console.log('🔍 PARENT ALERTS: Document path:', parentAlertsRef.path);
@@ -237,28 +260,31 @@ const Alerts = () => {
       });
       
       setAlerts(allAlerts);
+      
+      // Cache the data for offline access
+      try {
+        await cacheAlerts(parentDocId, allAlerts);
+      } catch (cacheError) {
+        console.log('Error caching alerts:', cacheError);
+      }
     } catch (error) {
       console.error('Error loading alerts:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        Alert.alert('Error', 'Failed to load alerts');
-      }
+      // Don't show network error modal during navigation/offline mode
+      // Keep using cached data if available
     } finally {
       setLoading(false);
     }
   };
 
-  // Real-time listener for parent_alerts
+  // Real-time listener for parent_alerts (only when online)
   useEffect(() => {
     if (!user?.uid) {
       console.warn('No user UID available for real-time listener');
+      return;
+    }
+    
+    // Only set up listener if online
+    if (!isConnected) {
       return;
     }
     
@@ -358,6 +384,13 @@ const Alerts = () => {
             console.log('🔍 PARENT ALERTS: Real-time listener updating alerts:', mapped.map(a => ({ id: a.alertId, status: a.status, type: a.alertType })));
             setAlerts(mapped);
             setLoading(false);
+            
+            // Cache the updated alerts for offline access
+            try {
+              await cacheAlerts(parentDocId, mapped);
+            } catch (cacheError) {
+              console.log('Error caching alerts in real-time listener:', cacheError);
+            }
           } catch (error) {
             console.error('Error in real-time listener:', error);
             setLoading(false);
@@ -370,14 +403,14 @@ const Alerts = () => {
     })();
     
     return () => { try { unsub && unsub(); } catch {} };
-  }, [user?.uid]);
+  }, [user?.uid, isConnected]);
 
   // Load alerts on mount and focus
   useEffect(() => {
     if (user?.uid) {
       loadAlerts();
     }
-  }, [user?.uid]);
+  }, [user?.uid, isConnected]);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
@@ -386,7 +419,7 @@ const Alerts = () => {
       }
     });
     return unsubscribe;
-  }, [navigation, user?.uid]);
+  }, [navigation, user?.uid, isConnected]);
 
   // Periodic cleanup of schedule notifications every 5 minutes
   useEffect(() => {
@@ -1894,17 +1927,6 @@ const Alerts = () => {
       </View>
     </Modal>
 
-    {/* Network Error Modal */}
-    <Modal transparent animationType="fade" visible={networkErrorVisible} onRequestClose={() => setNetworkErrorVisible(false)}>
-      <View style={styles.modalOverlayCenter}>
-        <View style={styles.fbModalCard}>
-          <View style={styles.fbModalContent}>
-            <Text style={[styles.fbModalTitle, { color: networkErrorColor }]}>{networkErrorTitle}</Text>
-            {networkErrorMessage ? <Text style={styles.fbModalMessage}>{networkErrorMessage}</Text> : null}
-          </View>
-        </View>
-      </View>
-    </Modal>
   </>);
 };
 

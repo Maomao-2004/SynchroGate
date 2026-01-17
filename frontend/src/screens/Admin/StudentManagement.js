@@ -1665,10 +1665,6 @@ const StudentManagement = () => {
                         <View style={[styles.legendDot, { backgroundColor: '#FEE2E2' }]} />
                         <Text style={styles.legendText}>No QR Code</Text>
                       </View>
-                      <View style={styles.legendItem}>
-                        <View style={[styles.legendDot, { backgroundColor: '#DCFCE7' }]} />
-                        <Text style={styles.legendText}>Changed (24h)</Text>
-                      </View>
                     </View>
                     <View style={styles.badgeContainer}>
                       {isSelectionMode && (
@@ -1938,10 +1934,6 @@ const StudentManagement = () => {
                       <View style={styles.legendItem}>
                         <View style={[styles.legendDot, { backgroundColor: '#FEE2E2' }]} />
                         <Text style={styles.legendText}>No QR Code</Text>
-                      </View>
-                      <View style={styles.legendItem}>
-                        <View style={[styles.legendDot, { backgroundColor: '#DCFCE7' }]} />
-                        <Text style={styles.legendText}>Changed (24h)</Text>
                       </View>
                     </View>
                     <View style={styles.badgeContainer}>
@@ -2453,7 +2445,7 @@ const styles = StyleSheet.create({
   legendContainer: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 12, height: 12, borderRadius: 6 },
-  legendText: { fontSize: 11, color: '#0078cf', fontWeight: '600' },
+  legendText: { fontSize: 9, color: '#0078cf', fontWeight: '600' },
   searchResultContainer: { marginTop: 20, backgroundColor: '#F9FAFB', borderRadius: 8, padding: 15, shadowColor: '#000', shadowOpacity: 0.05, shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 2 },
   studentRowNoQR: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: '#F3F4F6', borderRadius: 6, marginHorizontal: 2, marginVertical: 1, backgroundColor: '#FEF2F2' },
   studentRowNewQR: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: '#F3F4F6', borderRadius: 6, marginHorizontal: 2, marginVertical: 1, backgroundColor: '#DCFCE7' },

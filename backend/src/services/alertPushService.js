@@ -425,20 +425,12 @@ const initializeStudentAlertsListener = () => {
         
         // CRITICAL: Process each alert with strict validation
         for (const alert of newAlerts) {
-          // CRITICAL: Verify alert's studentId matches document ID FIRST
+          // CRITICAL: Verify alert's studentId matches document ID
+          // Document ID is student ID number (e.g., "2022-00789")
+          // Alert's studentId might be either student ID number OR Firebase UID
           const alertStudentId = alert.studentId || alert.student_id;
-          if (alertStudentId) {
-            const normalizedAlertStudentId = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
-            const normalizedStudentId = String(studentId).replace(/-/g, '').trim().toLowerCase();
-            if (normalizedAlertStudentId !== normalizedStudentId) {
-              console.log(`⏭️ [LISTENER] SKIP - alert studentId (${alertStudentId}) doesn't match document ID (${studentId})`);
-              continue;
-            }
-          } else {
-            alert.studentId = studentId;
-          }
           
-          // CRITICAL: Verify student document exists
+          // CRITICAL: Verify student document exists first
           const studentDocCheck = await firestore.collection('users').doc(studentId).get();
           if (!studentDocCheck.exists) {
             console.log(`⏭️ [LISTENER] SKIP - student document ${studentId} does not exist`);
@@ -446,6 +438,31 @@ const initializeStudentAlertsListener = () => {
           }
           
           const studentDataCheck = studentDocCheck.data();
+          
+          // Now verify alert's studentId matches
+          if (alertStudentId) {
+            const normalizedAlertStudentId = String(alertStudentId).replace(/-/g, '').trim().toLowerCase();
+            const normalizedStudentId = String(studentId).replace(/-/g, '').trim().toLowerCase();
+            
+            // Check if alert's studentId matches document ID (student ID number)
+            const matchesDocumentId = normalizedAlertStudentId === normalizedStudentId;
+            
+            // Check if alert's studentId matches the user's UID (Firebase document ID)
+            const studentUid = String(studentDataCheck.uid || '').replace(/-/g, '').trim().toLowerCase();
+            const matchesUid = normalizedAlertStudentId === studentUid;
+            
+            // Check if alert's studentId matches the user's studentId field
+            const userStudentId = String(studentDataCheck.studentId || '').replace(/-/g, '').trim().toLowerCase();
+            const matchesUserStudentId = normalizedAlertStudentId === userStudentId;
+            
+            if (!matchesDocumentId && !matchesUid && !matchesUserStudentId) {
+              console.log(`⏭️ [LISTENER] SKIP - alert studentId (${alertStudentId}) doesn't match document ID (${studentId}), UID (${studentDataCheck.uid}), or user's studentId (${studentDataCheck.studentId})`);
+              continue;
+            }
+          } else {
+            // If alert has no studentId, set it to the document ID
+            alert.studentId = studentId;
+          }
           
           // Role must be student
           if (String(studentDataCheck.role).toLowerCase() !== 'student') {

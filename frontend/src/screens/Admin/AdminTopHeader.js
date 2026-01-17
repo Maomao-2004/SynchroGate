@@ -358,8 +358,7 @@ export default function AdminTopHeader() {
   };
 
   const navigateProfile = () => {
-    // For admin, we can navigate to dashboard
-    navigateBack();
+    // Profile icon navigation removed - no action
   };
 
   const navigateMenuTab = () => {
