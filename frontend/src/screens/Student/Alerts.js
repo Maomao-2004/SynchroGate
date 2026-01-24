@@ -950,7 +950,7 @@ const Alerts = () => {
                 if (filter === 'unread') return alert.status === 'unread';
                 if (filter === 'read') return alert.status === 'read';
                 return true;
-              }).map((alert) => {
+              }).map((alert, index) => {
                 // Determine icon + color per alert (mirror parent alerts structure)
                 let typeColor = alertTypes[alert.alertType]?.color || '#6B7280';
                 let iconBg = '#EEF2F7';
@@ -1090,8 +1090,11 @@ const Alerts = () => {
                 
                 const isPendingLink = alert.alertType === 'link_request' && alert.status !== 'read';
                 
+                // Generate unique key: include index to prevent duplicate keys
+                const uniqueKey = [alert.alertId || 'noid', alert.createdAt || 't', alert.alertType || 'type', index].join('_');
+                
                 return (
-                  <TouchableOpacity key={[alert.alertId || 'noid', alert.createdAt || 't', alert.alertType || 'type'].join('_')} activeOpacity={0.8} onPress={isPendingLink ? undefined : async () => {
+                  <TouchableOpacity key={uniqueKey} activeOpacity={0.8} onPress={isPendingLink ? undefined : async () => {
                     console.log('🔍 STUDENT ALERTS: Tapping notification:', {
                       alertId: alert.alertId,
                       alertType: alert.alertType,

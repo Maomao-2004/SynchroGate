@@ -825,12 +825,12 @@ const StudentDashboard = () => {
                 disabled={qrRequestSending}
                 onPress={() => setQrRequestVisible(false)}
               >
-                <Text style={styles.fbModalCancelText}>No</Text>
+                <Text style={styles.fbModalCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
                   styles.fbModalConfirmButton,
-                  { backgroundColor: '#2563EB' },
+                  { backgroundColor: '#004f89' },
                   qrRequestSending && styles.fbModalButtonDisabled
                 ]}
                 disabled={qrRequestSending}
@@ -885,7 +885,7 @@ const StudentDashboard = () => {
                 }}
               >
                 <Text style={styles.fbModalConfirmText}>
-                  {qrRequestSending ? 'Sending...' : 'Yes'}
+                  {qrRequestSending ? 'Sending...' : 'Confirm'}
                 </Text>
               </TouchableOpacity>
             </View>

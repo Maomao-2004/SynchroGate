@@ -112,7 +112,7 @@ export default function AdminMenu() {
           <View style={styles.profileRow}>
             <View style={styles.profileAvatarWrap}>
               <Image
-                source={require('../../assets/logo.png')}
+                source={require('../../assets/SG.png')}
                 style={styles.profileAvatarImg}
               />
             </View>

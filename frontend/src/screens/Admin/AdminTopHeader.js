@@ -371,7 +371,7 @@ export default function AdminTopHeader() {
     }
   };
 
-  const avatar = require('../../assets/logo.png');
+  const avatar = require('../../assets/SG.png');
 
   return (
     <SafeAreaView 

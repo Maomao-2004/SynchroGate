@@ -318,7 +318,7 @@ const LoginScreen = () => {
             style={styles.logoButton}
           >
             <Image
-              source={require("../../assets/adaptive-icon.png")}
+              source={require("../../assets/SG.png")}
               style={styles.logo}
               resizeMode="contain"
             />

@@ -4,10 +4,10 @@
     "slug": "synchrogate",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./src/assets/logo.png",
+    "icon": "./src/assets/SG.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./src/assets/logo.png",
+      "image": "./src/assets/SG.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -31,7 +31,7 @@
         "translucent": false
       },
       "adaptiveIcon": {
-        "foregroundImage": "./src/assets/logo.png",
+        "foregroundImage": "./src/assets/SG.png",
         "backgroundColor": "#ffffff"
       },
       "permissions": [
@@ -46,7 +46,7 @@
       "googleServicesFile": "./google-services.json"
     },
     "web": {
-      "favicon": "./src/assets/logo.png"
+      "favicon": "./src/assets/SG.png"
     },
     "plugins": [
       "expo-notifications",

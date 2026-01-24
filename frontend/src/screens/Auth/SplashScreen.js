@@ -66,7 +66,7 @@ export default function SplashScreen({ navigation }) {
   return (
     <View style={styles.container}>
       <Animated.Image
-        source={require('../../assets/logo.png')}
+        source={require('../../assets/SG.png')}
         style={[styles.logo, { transform: [{ rotate: spin }] }]}
         resizeMode="contain"
       />

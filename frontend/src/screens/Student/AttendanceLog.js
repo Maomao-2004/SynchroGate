@@ -415,6 +415,7 @@ const AttendanceLog = () => {
   const renderLogItem = ({ item, index }) => {
     const ts = item.timeOfScanned ?? item.timestamp;
     const time = formatTime(ts);
+    const date = formatDate(ts);
     
     const type = item?.entry === 'IN' ? 'IN' : 'OUT';
     const scanLocation = item?.scanLocation || 'Unknown Location';
@@ -442,7 +443,10 @@ const AttendanceLog = () => {
               {scanLocation} {scannerDeviceId}
             </Text>
           </View>
-          <Text style={styles.itemTime}>{time}</Text>
+          <View style={styles.itemTimeContainer}>
+            <Text style={styles.itemTime}>{time}</Text>
+            <Text style={styles.itemDate}>{date}</Text>
+          </View>
         </View>
       </View>
     );
@@ -832,11 +836,19 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 1,
   },
+  itemTimeContainer: {
+    alignItems: 'flex-end',
+    marginLeft: 6,
+    justifyContent: 'flex-start',
+  },
   itemTime: {
     fontSize: 10,
     color: '#6B7280',
-    marginLeft: 6,
-    alignSelf: 'flex-start',
+    marginBottom: 2,
+  },
+  itemDate: {
+    fontSize: 9,
+    color: '#9CA3AF',
   },
   centerContainer: { 
     flex: 1, 

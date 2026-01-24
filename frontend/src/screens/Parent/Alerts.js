@@ -1742,7 +1742,7 @@ const Alerts = () => {
                 }
                 return acc;
               }, [])
-              .map((alert) => {
+              .map((alert, index) => {
                 // Determine icon + color per alert (mirror student alerts structure)
                 let typeColor = alertTypes[alert.alertType]?.color || '#6B7280';
                 let iconBg = '#EEF2F7';
@@ -1895,8 +1895,11 @@ const Alerts = () => {
                   });
                 }
                 
+                // Generate unique key: include index to prevent duplicate keys
+                const uniqueKey = [alert.alertId || 'noid', alert.createdAt || 't', alert.alertType || 'type', index].join('_');
+                
                 return (
-                  <View key={[alert.alertId || 'noid', alert.createdAt || 't', alert.alertType || 'type'].join('_')} style={[styles.itemRow, (isPendingLink || isPendingSchedulePermission) && styles.itemRowWithButtons]}>
+                  <View key={uniqueKey} style={[styles.itemRow, (isPendingLink || isPendingSchedulePermission) && styles.itemRowWithButtons]}>
                     {(isPendingLink || isPendingSchedulePermission) ? (
                       <View style={{ flex: 1 }}>
                         <View style={styles.itemRowTop}>
