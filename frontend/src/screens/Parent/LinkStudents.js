@@ -89,6 +89,8 @@ function LinkStudents() {
   const [headerSearchShowing, setHeaderSearchShowing] = useState(false);
   const [showOfflineBanner, setShowOfflineBanner] = useState(false);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorModalMessage, setErrorModalMessage] = useState('');
   
   // Force re-render when link-related state changes
   const triggerRefresh = useCallback(() => {
@@ -733,9 +735,22 @@ function LinkStudents() {
     } catch {}
   };
 
+  const showErrorModal = (message) => {
+    setErrorModalMessage(message);
+    setErrorModalVisible(true);
+    setTimeout(() => setErrorModalVisible(false), 3000);
+  };
+
   // Send link request (parent -> student)
   const sendLinkRequest = async (studentData) => {
     if (!studentData || !user?.uid) { Alert.alert('Error', 'Missing required information.'); return; }
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       const parentUid = String(user?.uid || '').trim();
       const parentCanonicalId = (await getCanonicalParentDocId()) || parentUid;
@@ -746,54 +761,7 @@ function LinkStudents() {
         return;
       }
       
-      // Check if student has reached their limit of 1 parent
-      try {
-        const studentCanonicalId = String(studentData?.studentId || studentData?.studentID || studentData?.studentIdNumber || studentUid).trim();
-        
-        // Query active links for this student (by UID and canonical ID)
-        const studentLinksByUid = query(
-          collection(db, 'parent_student_links'),
-          where('studentId', '==', studentUid),
-          where('status', '==', 'active')
-        );
-        const studentLinksByCanonical = studentCanonicalId && studentCanonicalId.includes('-')
-          ? query(
-              collection(db, 'parent_student_links'),
-              where('studentIdNumber', '==', studentCanonicalId),
-              where('status', '==', 'active')
-            )
-          : null;
-        
-        const [snapByUid, snapByCanonical] = await Promise.all([
-          getDocs(studentLinksByUid),
-          studentLinksByCanonical ? getDocs(studentLinksByCanonical) : Promise.resolve({ docs: [] })
-        ]);
-        
-        // Count unique parents (by parentId)
-        const uniqueParentIds = new Set();
-        [...snapByUid.docs, ...snapByCanonical.docs].forEach(doc => {
-          const data = doc.data();
-          const pid = String(data.parentId || '').trim();
-          const pidNum = String(data.parentIdNumber || '').trim();
-          if (pid) uniqueParentIds.add(pid);
-          if (pidNum) uniqueParentIds.add(pidNum);
-        });
-        
-        if (uniqueParentIds.size >= 1) {
-          setFeedbackSuccess(false);
-          setFeedbackTitle('Error');
-          setFeedbackMessage(`${studentData.firstName} ${studentData.lastName} has already linked to a parent. Students can only link to 1 parent.`);
-          setFeedbackVisible(true);
-          setTimeout(() => {
-            setFeedbackVisible(false);
-            resetToNormalState();
-          }, 3000);
-          return;
-        }
-      } catch (error) {
-        console.error('Error checking student link limit:', error);
-        // Continue with the request if check fails (non-blocking)
-      }
+      // Student link limit check removed - students can now link to multiple parents freely
       
       setLinkingStudent(true);
       // Prevent duplicate pending
@@ -905,6 +873,13 @@ function LinkStudents() {
   // Cancel pending link request (parent -> student)
   const cancelLinkRequest = async (studentData) => {
     if (!studentData || !user?.uid) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       const parentUid = String(user?.uid || '').trim();
       const parentCanonicalId = (await getCanonicalParentDocId()) || parentUid;
@@ -1027,6 +1002,13 @@ function LinkStudents() {
 
   const handleUnlinkConfirm = async () => {
     if (!unlinkStudentData) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       setUnlinking(true);
       await deleteDoc(doc(db, 'parent_student_links', unlinkStudentData.linkId));
@@ -1965,6 +1947,18 @@ function LinkStudents() {
         </Modal>
 
       </View>
+
+      {/* Error Feedback Modal */}
+      <Modal transparent animationType="fade" visible={errorModalVisible} onRequestClose={() => setErrorModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.fbModalCard}>
+            <View style={styles.fbModalContent}>
+              <Text style={[styles.fbModalTitle, { color: '#8B0000' }]}>No internet Connection</Text>
+              <Text style={styles.fbModalMessage}>{errorModalMessage}</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
       
       <OfflineBanner visible={showOfflineBanner} />
     </>

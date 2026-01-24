@@ -68,6 +68,8 @@ const Alerts = () => {
   const [showOfflineBanner, setShowOfflineBanner] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorModalMessage, setErrorModalMessage] = useState('');
   
   
   // Local sidebar animation removed (handled by unified header)
@@ -475,7 +477,18 @@ const Alerts = () => {
     } catch {}
   };
 
+  const showErrorModal = (message) => {
+    setErrorModalMessage(message);
+    setErrorModalVisible(true);
+    setTimeout(() => setErrorModalVisible(false), 3000);
+  };
+
   const markAllAsRead = async () => {
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
     try {
       const parentDocId = await getParentDocId();
       setMarkingAsRead(true);
@@ -574,6 +587,12 @@ const Alerts = () => {
   };
 
   const deleteAllNotifications = async () => {
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       const parentDocId = await getParentDocId();
       setIsDeleting(true);
@@ -647,6 +666,13 @@ const Alerts = () => {
 
   const acceptRequest = async (alert) => {
     if (!alert?.linkId || !user?.uid) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       setActionLoading({ id: alert.alertId, action: 'accept' });
       console.log('✅ PARENT ACCEPT: Starting accept process for alert:', {
@@ -840,6 +866,13 @@ const Alerts = () => {
 
   const declineRequest = async (alert) => {
     if (!alert?.linkId || !user?.uid) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       setActionLoading({ id: alert.alertId, action: 'decline' });
       console.log('🔴 PARENT DECLINE: Starting decline process for alert:', {
@@ -939,6 +972,13 @@ const Alerts = () => {
 
   const acceptSchedulePermission = async (alert) => {
     if (!alert?.requestId || !alert?.studentId) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       setActionLoading({ id: alert.alertId, action: 'accept' });
       console.log('✅ PARENT SCHEDULE PERMISSION ACCEPT: Starting accept process for alert:', {
@@ -1106,6 +1146,13 @@ const Alerts = () => {
 
   const declineSchedulePermission = async (alert) => {
     if (!alert?.requestId || !alert?.studentId) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
     try {
       setActionLoading({ id: alert.alertId, action: 'decline' });
       console.log('🔴 PARENT SCHEDULE PERMISSION DECLINE: Starting decline process for alert:', {
@@ -2090,6 +2137,18 @@ const Alerts = () => {
               {feedbackSuccess ? 'Success' : 'Error'}
             </Text>
             <Text style={styles.fbModalMessage}>{feedbackMessage}</Text>
+          </View>
+        </View>
+      </View>
+    </Modal>
+
+    {/* Error Feedback Modal */}
+    <Modal transparent animationType="fade" visible={errorModalVisible} onRequestClose={() => setErrorModalVisible(false)}>
+      <View style={styles.modalOverlayCenter}>
+        <View style={styles.fbModalCard}>
+          <View style={styles.fbModalContent}>
+            <Text style={[styles.fbModalTitle, { color: '#8B0000' }]}>No internet Connection</Text>
+            <Text style={styles.fbModalMessage}>{errorModalMessage}</Text>
           </View>
         </View>
       </View>

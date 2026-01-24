@@ -14,6 +14,7 @@ import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/nativ
 import { doc, getDoc, query, collection, where, getDocs, onSnapshot, deleteDoc, updateDoc, setDoc, arrayUnion } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { AuthContext } from '../../contexts/AuthContext';
+import { NetworkContext } from '../../contexts/NetworkContext';
 import OfflineBanner from '../../components/OfflineBanner';
 import NetInfo from '@react-native-community/netinfo';
 import { deleteConversationOnUnlink, deleteAllStudentToStudentConversations } from '../../utils/conversationUtils';
@@ -39,6 +40,8 @@ const StudentProfile = () => {
   const [feedbackTitle, setFeedbackTitle] = useState('');
   const [showOfflineBanner, setShowOfflineBanner] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorModalMessage, setErrorModalMessage] = useState('');
   const fetchedStudentIdRef = useRef(null);
 
   // Hide parent tab while focused and restore on blur
@@ -383,13 +386,21 @@ const StudentProfile = () => {
   const fullName = `${currentStudent?.firstName || ""} ${currentStudent?.middleName || ""} ${currentStudent?.lastName || ""}`.trim();
 
   // Unlink student
+  const showErrorModal = (message) => {
+    setErrorModalMessage(message);
+    setErrorModalVisible(true);
+    setTimeout(() => setErrorModalVisible(false), 3000);
+  };
+
   const handleUnlinkConfirm = async () => {
     if (!currentStudent?.linkId) {
-      setFeedbackSuccess(false);
-      setFeedbackTitle('Error');
-      setFeedbackMessage('Invalid student data. Please try again.');
-      setFeedbackVisible(true);
-      setTimeout(() => setFeedbackVisible(false), 3000);
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
       return;
     }
     
@@ -540,25 +551,11 @@ const StudentProfile = () => {
         }, 3000);
     } catch (error) {
       console.error('Error unlinking student:', error);
-      // Only show network error modal for actual network errors
-      if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-        const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-        setNetworkErrorTitle(errorInfo.title);
-        setNetworkErrorMessage(errorInfo.message);
-        setNetworkErrorColor(errorInfo.color);
-        setNetworkErrorVisible(true);
-        setTimeout(() => setNetworkErrorVisible(false), 5000);
-      } else {
-        // Close confirmation modal first
-        setUnlinkConfirmVisible(false);
-        
-        // Show feedback modal
-        setFeedbackSuccess(false);
-        setFeedbackTitle('Error');
-        setFeedbackMessage(error.message || 'Failed to unlink student.');
-        setFeedbackVisible(true);
-        setTimeout(() => setFeedbackVisible(false), 3000);
-      }
+      // Close confirmation modal first
+      setUnlinkConfirmVisible(false);
+      
+      // Show "No internet Connection" modal for all errors during database operations
+      showErrorModal('No internet connection. Please check your network and try again.');
     } finally {
       setUnlinking(false);
     }
@@ -604,12 +601,7 @@ const StudentProfile = () => {
             console.log('Error listening to student updates:', error);
             // Only show network error modal for actual network errors
             if (error?.code?.includes('unavailable') || error?.code?.includes('network') || error?.message?.toLowerCase().includes('network')) {
-              const errorInfo = getNetworkErrorMessage({ type: 'unstable_connection', message: error.message });
-              setNetworkErrorTitle(errorInfo.title);
-              setNetworkErrorMessage(errorInfo.message);
-              setNetworkErrorColor(errorInfo.color);
-              setNetworkErrorVisible(true);
-              setTimeout(() => setNetworkErrorVisible(false), 5000);
+              showErrorModal('No internet connection. Please check your network and try again.');
             }
           });
           break; // Successfully set up listener
@@ -808,6 +800,18 @@ const StudentProfile = () => {
           <Text style={styles.unlinkButtonText}>Unlink</Text>
         </View>
       </TouchableOpacity>
+
+      {/* Error Feedback Modal */}
+      <Modal transparent animationType="fade" visible={errorModalVisible} onRequestClose={() => setErrorModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.fbModalCard}>
+            <View style={styles.fbModalContent}>
+              <Text style={[styles.fbModalTitle, { color: '#8B0000' }]}>No internet Connection</Text>
+              <Text style={styles.fbModalMessage}>{errorModalMessage}</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <OfflineBanner visible={showOfflineBanner} />
     </View>

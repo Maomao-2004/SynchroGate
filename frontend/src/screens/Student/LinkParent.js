@@ -957,60 +957,7 @@ function LinkStudents() {
         return;
       }
       
-      // Check if parent has reached their limit of 4 students
-      try {
-        const parentCanonicalId = String(
-          studentData?.parentId ||
-          studentData?.parentID ||
-          studentData?.parentIdNumber ||
-          studentData?.parentNumber ||
-          parentUid
-        ).trim();
-        
-        // Query active links for this parent (by UID and canonical ID)
-        const parentLinksByUid = query(
-          collection(db, 'parent_student_links'),
-          where('parentId', '==', parentUid),
-          where('status', '==', 'active')
-        );
-        const parentLinksByCanonical = parentCanonicalId && parentCanonicalId.includes('-')
-          ? query(
-              collection(db, 'parent_student_links'),
-              where('parentIdNumber', '==', parentCanonicalId),
-              where('status', '==', 'active')
-            )
-          : null;
-        
-        const [snapByUid, snapByCanonical] = await Promise.all([
-          getDocs(parentLinksByUid),
-          parentLinksByCanonical ? getDocs(parentLinksByCanonical) : Promise.resolve({ docs: [] })
-        ]);
-        
-        // Count unique students (by studentId)
-        const uniqueStudentIds = new Set();
-        [...snapByUid.docs, ...snapByCanonical.docs].forEach(doc => {
-          const data = doc.data();
-          const sid = String(data.studentId || '').trim();
-          const sidNum = String(data.studentIdNumber || '').trim();
-          if (sid) uniqueStudentIds.add(sid);
-          if (sidNum) uniqueStudentIds.add(sidNum);
-        });
-        
-        if (uniqueStudentIds.size >= 4) {
-          setFeedbackSuccess(false);
-          setFeedbackTitle('Error');
-          setFeedbackMessage(`${studentData.firstName} ${studentData.lastName} has reached the limit of 4 linked students.`);
-          setFeedbackVisible(true);
-          setTimeout(() => {
-            setFeedbackVisible(false);
-            resetToNormalState();
-          }, 3000);
-          return;
-        }
-      } catch (error) {
-        console.error('Error checking parent link limit:', error);
-        // Continue with the request if check fails (non-blocking)
-      }
+      // Parent link limit check removed - students can now link freely to any parent
       
       // Check internet connection before proceeding
       if (!isConnected) {

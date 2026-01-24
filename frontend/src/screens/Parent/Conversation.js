@@ -33,6 +33,8 @@ export default function Conversation() {
   const [queuedMessages, setQueuedMessages] = useState([]);
   const [showOfflineBanner, setShowOfflineBanner] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorModalMessage, setErrorModalMessage] = useState('');
 
   const displayName = String((studentName || '').trim()) || 'Student';
 
@@ -258,6 +260,12 @@ export default function Conversation() {
     return () => clearInterval(interval);
   }, [conversationId, isConnected]);
 
+  const showErrorModal = (message) => {
+    setErrorModalMessage(message);
+    setErrorModalVisible(true);
+    setTimeout(() => setErrorModalVisible(false), 3000);
+  };
+
   const sendMessage = async () => {
     const text = String(input || '').trim();
     if (!text || !conversationId || !user?.uid) return;
@@ -379,11 +387,11 @@ export default function Conversation() {
 
   const performDelete = async () => {
     if (!conversationId) return;
+    
+    // Check internet connection before proceeding
     if (!isConnected) {
-      setFeedbackText('Cannot delete conversation while offline.');
-      setFeedbackSuccess(false);
+      showErrorModal('No internet connection. Please check your network and try again.');
       setConfirmVisible(false);
-      setFeedbackVisible(true);
       return;
     }
     try {
@@ -507,6 +515,18 @@ export default function Conversation() {
         </View>
       </Modal>
       
+      {/* Error Feedback Modal */}
+      <Modal transparent animationType="fade" visible={errorModalVisible} onRequestClose={() => setErrorModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.fbModalCard}>
+            <View style={styles.fbModalContent}>
+              <Text style={[styles.fbModalTitle, { color: '#8B0000' }]}>No internet Connection</Text>
+              <Text style={styles.fbModalMessage}>{errorModalMessage}</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <OfflineBanner visible={showOfflineBanner} />
     </View>
   );

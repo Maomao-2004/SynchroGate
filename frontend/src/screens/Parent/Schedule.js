@@ -44,6 +44,8 @@ const ParentSchedule = () => {
   const [isProcessingPermission, setIsProcessingPermission] = useState(false);
   const [showOfflineBanner, setShowOfflineBanner] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorModalMessage, setErrorModalMessage] = useState('');
 
   useEffect(() => {
     const loadProfile = async () => {
@@ -559,9 +561,21 @@ const ParentSchedule = () => {
   };
   const cancelLogout = () => setLogoutVisible(false);
 
+  const showErrorModal = (message) => {
+    setErrorModalMessage(message);
+    setErrorModalVisible(true);
+    setTimeout(() => setErrorModalVisible(false), 3000);
+  };
+
   // Grant schedule permission
   const grantPermission = async () => {
     if (!selectedChildId || isProcessingPermission) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
     
     const selectedChild = children.find(child => child.id === selectedChildId);
     if (!selectedChild?.studentId) return;
@@ -627,6 +641,12 @@ const ParentSchedule = () => {
   // Remove schedule permission
   const removePermission = async () => {
     if (!selectedChildId || isProcessingPermission) return;
+    
+    // Check internet connection before proceeding
+    if (!isConnected) {
+      showErrorModal('No internet connection. Please check your network and try again.');
+      return;
+    }
     
     const selectedChild = children.find(child => child.id === selectedChildId);
     if (!selectedChild?.studentId) return;
@@ -1077,6 +1097,18 @@ const ParentSchedule = () => {
         </TouchableOpacity>
       )}
       
+      {/* Error Feedback Modal */}
+      <Modal transparent animationType="fade" visible={errorModalVisible} onRequestClose={() => setErrorModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.fbModalCard}>
+            <View style={styles.fbModalContent}>
+              <Text style={[styles.fbModalTitle, { color: '#8B0000' }]}>No internet Connection</Text>
+              <Text style={styles.fbModalMessage}>{errorModalMessage}</Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <OfflineBanner visible={showOfflineBanner} />
     </View>
   );
